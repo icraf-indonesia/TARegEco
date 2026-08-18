@@ -1,0 +1,1565 @@
+---
+title: "TA Regional Economy Module - Projection Notebook"
+author: "Yumna Karimah"
+date: "`r Sys.Date()`"
+output: html_document
+params:
+  mode: "BAU"         # "BAU" atau "Scenario"
+  n_scenarios: 2      # Jumlah skenario intervensi
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(DT)
+library(ggplot2)
+library(plotly)
+library(terra)
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(openxlsx)
+```
+
+# Pendahuluan
+
+Dokumen ini adalah notebook R Markdown berjudul "Trade-off Analysis (TA) Ekonomi Regional".
+
+Mode saat ini: `r params$mode`
+Jumlah skenario: `r params$n_scenarios`
+
+Mode BAU: Proyeksi baseline + generate template untuk `r params$n_scenarios` skenario.
+
+Mode Scenario: Proyeksi dengan `r params$n_scenarios` skenario intervensi + komparasi.
+
+## Daftar Isi
+
+1. [Analisis Deskriptif](#analisis-deskriptif)
+2. [Proyeksi](#proyeksi)
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# =====================================================
+# 1. KONFIGURASI INPUT
+# =====================================================
+
+## Mandatory
+descriptive_analysis_table <- "data/IO_Analysis_Output.xlsx"
+projection_area_file <- "data/table/luc_projection.xlsx"
+initial_year <- 2024
+end_year <- 2049
+time_step <- 5
+n_scenarios <- params$n_scenarios
+
+## Optional — otomatis NULL jika mode = "BAU"
+if (params$mode == "BAU") {
+  scenario_inputs <- NULL
+} else {
+  scenario_inputs <- list()
+  for (s in 1:n_scenarios) {
+    scenario_inputs[[s]] <- list(
+      name = paste0("Skenario_", s),
+      land_distribution = paste0("data/scenario/scenario", s, "/distribusi_lahan.xlsx"),
+      growth_rate       = paste0("data/scenario/scenario", s, "/growth_rate.xlsx"),
+      lpc               = paste0("data/scenario/scenario", s, "/produktivitas_lpc.xlsx"),
+      io_changes        = paste0("data/scenario/scenario", s, "/perubahan_io.xlsx"),
+      intensity         = paste0("data/scenario/scenario", s, "/intensitas.xlsx")
+    )
+  }
+}
+
+# =====================================================
+# 2. HELPER FUNCTIONS
+# =====================================================
+
+read_sheet <- function(path, sheet) {
+  readxl::read_excel(path, sheet = sheet) |> as.data.frame()
+}
+
+create_period_table <- function(initial_year, end_year, time_step) {
+  start_year <- seq(initial_year, end_year - time_step, by = time_step)
+  end_period <- start_year + time_step
+  data.frame(
+    Period = paste0(start_year, "-", end_period),
+    Start_Year = start_year,
+    End_Year = end_period,
+    stringsAsFactors = FALSE
+  )
+}
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# =====================================================
+# 3. LOAD DATA BASELINE
+# =====================================================
+
+gdp_baseline <- read_sheet(descriptive_analysis_table, "GDP")
+gdp_baseline <- gdp_baseline |>
+  dplyr::mutate(
+    GDP = as.numeric(GDP),
+    OUTPUT = as.numeric(OUTPUT),
+    FD = as.numeric(FD),
+    Total_OUTPUT = as.numeric(Total_OUTPUT)
+  )
+
+gdp_baseline$Sector_Code <- 1:nrow(gdp_baseline)
+
+leontief_matrix <- as.matrix(
+  readxl::read_excel(descriptive_analysis_table, sheet = "Leontief_Matrix", col_names = FALSE)
+)
+
+full_io_df <- readxl::read_excel(descriptive_analysis_table, sheet = "Full_IO_Table")
+full_io_table <- as.matrix(full_io_df[, -1])
+storage.mode(full_io_table) <- "numeric"
+
+code_registry <- readxl::read_excel(descriptive_analysis_table, sheet = "Code_Registry")
+sector_idx <- code_registry$Row_Index[code_registry$Type == "Sector"]
+
+income_multiplier   <- read_sheet(descriptive_analysis_table, "Multiplier_Income")
+labour_multiplier   <- read_sheet(descriptive_analysis_table, "Multiplier_Labour")
+SUB_multiplier      <- read_sheet(descriptive_analysis_table, "Multiplier_SUB")
+output_multiplier   <- read_sheet(descriptive_analysis_table, "Multiplier_Output")
+linkage_table       <- read_sheet(descriptive_analysis_table, "Linkage")
+
+land_prop <- readxl::read_excel(descriptive_analysis_table, sheet = "Land_Proportion")
+projection_area <- readxl::read_excel(projection_area_file) |> as.data.frame()
+
+# Growth rate default
+growth_rate <- tryCatch(
+  read_sheet(descriptive_analysis_table, "Growth_Rate"),
+  error = function(e) NULL
+)
+
+# Land proportion default
+P_default <- as.matrix(land_prop[, -1])
+storage.mode(P_default) <- "numeric"
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# =====================================================
+# 4. FUNGSI-FUNGSI SKENARIO
+# =====================================================
+
+calculate_lpc_growth_rate <- function(lpc_scenario, sector, period_idx, periods_df) {
+  if (is.null(lpc_scenario)) return(0)
+  
+  sub <- lpc_scenario[
+    lpc_scenario$Sector_Code == sector &
+    lpc_scenario$Start_Year <= periods_df$End_Year[period_idx],
+  ]
+  
+  if (nrow(sub) == 0) return(0)
+  
+  crop_type <- sub$Crop_Type[1]
+  
+  if (crop_type == "annual") {
+    row_now <- sub[sub$Start_Year == periods_df$Start_Year[period_idx], ]
+    if (nrow(row_now) == 0) return(0)
+    return(row_now$Increment_Rate * row_now$Area_Implemented)
+  } else {
+    area_now <- sub$Area_Implemented[nrow(sub)]
+    total <- sum(sub$Increment_Rate * area_now)
+    return(total)
+  }
+}
+
+apply_io_changes <- function(full_io_table, io_changes, period_start, period_end) {
+  if (is.null(io_changes)) return(full_io_table)
+  
+  changes_period <- io_changes[
+    io_changes$Start_Year == period_start &
+    io_changes$End_Year == period_end,
+  ]
+  
+  if (nrow(changes_period) == 0) return(full_io_table)
+  
+  for (i in seq_len(nrow(changes_period))) {
+    r <- changes_period$Row_Code[i]
+    c <- changes_period$Col_Code[i]
+    pct <- changes_period$Change_Pct[i]
+    full_io_table[r, c] <- full_io_table[r, c] * (1 + pct)
+  }
+  
+  return(full_io_table)
+}
+
+recalculate_leontief <- function(full_io_table, sector_idx, output_total) {
+  intermediate <- full_io_table[sector_idx, sector_idx, drop = FALSE]
+  A <- sweep(intermediate, 2, output_total, "/")
+  A[!is.finite(A)] <- 0
+  I <- diag(nrow(A))
+  L <- solve(I - A)
+  return(L)
+}
+
+get_intensity <- function(intensity_table, sector, period_start, period_end) {
+  if (is.null(intensity_table)) return(1.0)
+  
+  row <- intensity_table[
+    intensity_table$Sector_Code == sector &
+    intensity_table$Start_Year == period_start &
+    intensity_table$End_Year == period_end,
+  ]
+  
+  if (nrow(row) == 0) return(1.0)
+  return(row$Intensity[1])
+}
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# =====================================================
+# 5. FUNGSI PROYEKSI UTAMA
+# =====================================================
+
+run_projection <- function(
+    gdp_baseline,
+    income_multiplier,
+    labour_multiplier,
+    SUB_multiplier,
+    output_multiplier,
+    linkage_table,
+    leontief_matrix,
+    full_io_table,
+    sector_idx,
+    P,
+    area_matrix,
+    growth_rate,
+    lpc_scenario = NULL,
+    io_changes = NULL,
+    intensity_table = NULL
+) {
+  
+  years <- as.numeric(colnames(area_matrix))
+  years <- sort(years)
+  
+  if (length(years) > 1) {
+    time_step <- years[2] - years[1]
+  }
+  
+  periods_df <- create_period_table(
+    initial_year = years[1] - time_step,
+    end_year = years[length(years)],
+    time_step = time_step
+  )
+  
+  # Baseline values
+  current_prop_fd   <- as.numeric(gdp_baseline$Prop_FD)
+  current_lpc       <- as.numeric(gdp_baseline$LPC)
+  output_baseline   <- as.numeric(gdp_baseline$OUTPUT)
+  gdp_prop          <- as.numeric(gdp_baseline$GDP_PROP)
+  income_coeff      <- as.numeric(income_multiplier$Inc.multiplier)
+  labour_coeff      <- as.numeric(labour_multiplier$Lab.multiplier)
+  labour_compensation <- as.numeric(labour_multiplier$Labour_Compensation)
+  labour_baseline   <- as.numeric(labour_multiplier$Labour)
+  sub_coeff         <- as.numeric(SUB_multiplier$SUB.multiplier)
+  surplus_baseline  <- as.numeric(SUB_multiplier$Surplus)
+  output_coeff      <- as.numeric(output_multiplier$Out.multiplier)
+  itfl_coeff        <- linkage_table$ITFL
+  itbl_coeff        <- linkage_table$ITBL
+  
+  # Growth rate handling
+  if (!is.null(growth_rate) && ncol(growth_rate) >= 1) {
+    r <- as.numeric(growth_rate[[1]])
+  } else {
+    r <- rep(0.03, nrow(gdp_baseline))
+  }
+  
+  current_labour <- labour_baseline
+  
+  prop_labour <- output_baseline / labour_baseline
+  prop_labour[!is.finite(prop_labour)] <- 0
+  
+  growth_factor <- (1 + r)^time_step
+  
+  previous_output <- output_baseline
+  current_leontief <- leontief_matrix
+  current_io_table <- full_io_table
+  
+  results <- list()
+  
+  for (yr_idx in seq_along(years)) {
+    
+    year <- years[yr_idx]
+    
+    period_row <- periods_df[periods_df$End_Year == year, ]
+    if (nrow(period_row) == 0) next
+    p_start <- period_row$Start_Year
+    p_end   <- period_row$End_Year
+    
+    # IO Changes
+    current_io_table <- apply_io_changes(current_io_table, io_changes, p_start, p_end)
+    current_leontief <- recalculate_leontief(current_io_table, sector_idx, output_baseline)
+    
+    # Land Requirement
+    area_t <- area_matrix[, as.character(year)]
+    
+    if (ncol(P) == length(area_t)) {
+      land_req_t <- as.numeric(P %*% area_t)
+    } else if (nrow(P) == length(area_t)) {
+      land_req_t <- as.numeric(t(P) %*% area_t)
+    } else {
+      stop("Dimensi P tidak cocok dengan area_t")
+    }
+    land_req_t[land_req_t <= 0] <- NA
+    
+    # LPC Productivity
+    if (!is.null(lpc_scenario)) {
+      for (s in seq_along(current_lpc)) {
+        sector_code <- gdp_baseline$Sector_Code[s]
+        lpc_gr <- calculate_lpc_growth_rate(lpc_scenario, sector_code, yr_idx, periods_df)
+        current_lpc[s] <- current_lpc[s] + (current_lpc[s] * lpc_gr)
+      }
+    }
+    current_lpc[!is.finite(current_lpc)] <- 0
+    
+    # Final Demand
+    fd_t <- land_req_t * current_prop_fd * current_lpc * growth_factor
+    fd_t[is.na(fd_t)] <- 0
+    
+    # Intensity
+    intensity_vec <- sapply(seq_along(fd_t), function(s) {
+      get_intensity(intensity_table, gdp_baseline$Sector_Code[s], p_start, p_end)
+    })
+    
+    fd_baseline <- as.numeric(gdp_baseline$FD)
+    fd_effective <- fd_baseline + intensity_vec * (fd_t - fd_baseline)
+    fd_effective[!is.finite(fd_effective)] <- 0
+    fd_effective[fd_effective < 0] <- 0
+    
+    # Output
+    output_t <- as.numeric(current_leontief %*% matrix(fd_effective))
+    
+    # GDP
+    gdp_t <- output_t * gdp_prop
+    
+    # Income
+    projected_compensation <- income_coeff * output_baseline
+    prop_compensation <- labour_compensation / projected_compensation
+    prop_compensation[!is.finite(prop_compensation)] <- 0
+    income_t <- output_t * income_coeff * prop_compensation
+    
+    # Labour
+    add <- (output_t / prop_labour) * labour_coeff
+    add[!is.finite(add)] <- 0
+    labour_t <- current_labour + add
+    
+    # Surplus
+    projected_SUB <- sub_coeff * output_baseline
+    prop_SUB <- surplus_baseline / projected_SUB
+    prop_SUB[!is.finite(prop_SUB)] <- 0
+    surplus_t <- output_t * sub_coeff * prop_SUB
+    
+    # Output Multiplier
+    output_ratio <- output_t / previous_output
+    output_ratio[!is.finite(output_ratio)] <- 1
+    output_multiplier_t <- output_ratio * output_coeff
+    
+    # Land Linkage
+    itfl_t <- itfl_coeff * (land_req_t / gdp_baseline$Land_Requirement)
+    itbl_t <- itbl_coeff * (land_req_t / gdp_baseline$Land_Requirement)
+    itfl_t[!is.finite(itfl_t)] <- 0
+    itbl_t[!is.finite(itbl_t)] <- 0
+    
+    # Update for next period
+    prop_fd_t <- fd_t / output_t
+    prop_fd_t[!is.finite(prop_fd_t)] <- 0
+    
+    lpc_t <- output_t / land_req_t
+    lpc_t[!is.finite(lpc_t)] <- 0
+    
+    current_prop_fd <- prop_fd_t
+    current_lpc <- lpc_t
+    previous_output <- output_t
+    current_labour <- labour_t
+    
+    # Save
+    results[[as.character(year)]] <- data.frame(
+      YEAR = year,
+      SECTOR = gdp_baseline$SECTOR,
+      CATEGORY = gdp_baseline$CATEGORY,
+      LAND_REQUIREMENT = land_req_t,
+      LPC = lpc_t,
+      FD = fd_t,
+      FD_EFFECTIVE = fd_effective,
+      INTENSITY = intensity_vec,
+      PROP_FD = prop_fd_t,
+      OUTPUT = output_t,
+      GDP = gdp_t,
+      INCOME = income_t,
+      LABOUR = labour_t,
+      SURPLUS = surplus_t,
+      OUTPUT_MULTIPLIER = output_multiplier_t,
+      ITFL = itfl_t,
+      ITBL = itbl_t,
+      stringsAsFactors = FALSE
+    )
+  }
+  
+  final_result <- do.call(rbind, results)
+  final_result <- final_result |>
+    dplyr::mutate(
+      dplyr::across(
+        where(is.numeric),
+        ~ ifelse(!is.finite(.x), 0, .x)
+      )
+    )
+  
+  return(final_result)
+}
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# =====================================================
+# 6. SIAPKAN AREA MATRIX
+# =====================================================
+
+projection_long <- projection_area |>
+  tidyr::pivot_longer(
+    cols = -c(ID, LC),
+    names_to = "YEAR",
+    values_to = "AREA"
+  ) |>
+  dplyr::mutate(YEAR = as.numeric(YEAR))
+
+create_area_matrix <- function(projection_long) {
+  years <- sort(unique(projection_long$YEAR))
+  ids <- sort(unique(projection_long$ID))
+  area_matrix <- matrix(
+    0,
+    nrow = length(ids),
+    ncol = length(years),
+    dimnames = list(ids, years)
+  )
+  for (i in seq_len(nrow(projection_long))) {
+    area_matrix[
+      as.character(projection_long$ID[i]),
+      as.character(projection_long$YEAR[i])
+    ] <- projection_long$AREA[i]
+  }
+  area_matrix
+}
+
+area_matrix <- create_area_matrix(projection_long)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# =====================================================
+# 7. LOAD SCENARIO INPUTS & RUN ALL PROJECTIONS
+# =====================================================
+
+load_scenario_inputs <- function(sc_input, P_default, growth_rate) {
+  
+  # Land distribution
+  if (!is.null(sc_input$land_distribution) && file.exists(sc_input$land_distribution)) {
+    land_prop_sc <- readxl::read_excel(sc_input$land_distribution) |> as.data.frame()
+    first_sector_col <- min(grep("^S\\d+", colnames(land_prop_sc)))
+    P_sc <- as.matrix(land_prop_sc[, first_sector_col:ncol(land_prop_sc)])
+  } else {
+    P_sc <- P_default
+  }
+  storage.mode(P_sc) <- "numeric"
+  
+  # Growth rate
+  if (!is.null(sc_input$growth_rate) && file.exists(sc_input$growth_rate)) {
+    growth_rate_sc <- readxl::read_excel(sc_input$growth_rate) |> as.data.frame()
+  } else {
+    growth_rate_sc <- growth_rate
+  }
+  
+  # LPC Productivity
+  if (!is.null(sc_input$lpc) && file.exists(sc_input$lpc)) {
+    lpc_sc <- readxl::read_excel(sc_input$lpc) |> as.data.frame()
+    lpc_sc$Increment_Rate <- as.numeric(lpc_sc$Increment_Rate)
+    lpc_sc$Area_Implemented <- as.numeric(lpc_sc$Area_Implemented) / 100
+  } else {
+    lpc_sc <- NULL
+  }
+  
+  # IO Changes
+  if (!is.null(sc_input$io_changes) && file.exists(sc_input$io_changes)) {
+    io_sc <- readxl::read_excel(sc_input$io_changes) |> as.data.frame()
+    io_sc$Change_Pct <- as.numeric(io_sc$Change_Pct) / 100
+  } else {
+    io_sc <- NULL
+  }
+  
+  # Intensity
+  if (!is.null(sc_input$intensity) && file.exists(sc_input$intensity)) {
+    int_sc <- readxl::read_excel(sc_input$intensity) |> as.data.frame()
+    int_sc$Intensity <- as.numeric(int_sc$Intensity) / 100
+  } else {
+    int_sc <- NULL
+  }
+  
+  return(list(
+    P = P_sc,
+    growth_rate = growth_rate_sc,
+    lpc_scenario = lpc_sc,
+    io_changes = io_sc,
+    intensity_table = int_sc
+  ))
+}
+
+# ==========================================
+# RUN BAU
+# ==========================================
+message("Menjalankan proyeksi BAU...")
+projection_bau <- run_projection(
+  gdp_baseline        = gdp_baseline,
+  income_multiplier   = income_multiplier,
+  labour_multiplier   = labour_multiplier,
+  SUB_multiplier      = SUB_multiplier,
+  output_multiplier   = output_multiplier,
+  linkage_table       = linkage_table,
+  leontief_matrix     = leontief_matrix,
+  full_io_table       = full_io_table,
+  sector_idx          = sector_idx,
+  P                   = P_default,
+  area_matrix         = area_matrix,
+  growth_rate         = growth_rate,
+  lpc_scenario        = NULL,
+  io_changes          = NULL,
+  intensity_table     = NULL
+)
+projection_bau$SCENARIO <- "BAU"
+
+all_projections <- list(BAU = projection_bau)
+
+# ==========================================
+# RUN SCENARIOS (JIKA MODE SCENARIO)
+# ==========================================
+if (params$mode == "Scenario" && !is.null(scenario_inputs)) {
+  for (s in seq_along(scenario_inputs)) {
+    message("Menjalankan proyeksi Skenario ", s, "/", n_scenarios, "...")
+    
+    sc_input <- load_scenario_inputs(scenario_inputs[[s]], P_default, growth_rate)
+    
+    projection_sc <- run_projection(
+      gdp_baseline        = gdp_baseline,
+      income_multiplier   = income_multiplier,
+      labour_multiplier   = labour_multiplier,
+      SUB_multiplier      = SUB_multiplier,
+      output_multiplier   = output_multiplier,
+      linkage_table       = linkage_table,
+      leontief_matrix     = leontief_matrix,
+      full_io_table       = full_io_table,
+      sector_idx          = sector_idx,
+      P                   = sc_input$P,
+      area_matrix         = area_matrix,
+      growth_rate         = sc_input$growth_rate,
+      lpc_scenario        = sc_input$lpc_scenario,
+      io_changes          = sc_input$io_changes,
+      intensity_table     = sc_input$intensity_table
+    )
+    
+    projection_sc$SCENARIO <- paste0("Skenario_", s)
+    all_projections[[paste0("Skenario_", s)]] <- projection_sc
+  }
+}
+
+# Gabungkan semua
+projection_combined <- do.call(rbind, all_projections)
+rownames(projection_combined) <- NULL
+
+# Backward compatibility
+projection_result <- projection_bau
+
+message("Semua proyeksi selesai. Total: ", length(all_projections), " skenario.")
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# =====================================================
+# 8. FUNGSI PLOT & TABEL KOMPARASI
+# =====================================================
+
+plot_comparison <- function(data, value_col, title, y_label) {
+  n_scenarios <- length(unique(data$SCENARIO))
+  
+  if (n_scenarios > 1) {
+    ggplot(data, aes(x = YEAR, y = .data[[value_col]], color = SCENARIO)) +
+      geom_line(linewidth = 1) +
+      geom_point(size = 2) +
+      scale_x_continuous(breaks = unique(data$YEAR)) +
+      scale_color_brewer(palette = "Set1") +
+      labs(title = title, x = "Tahun", y = y_label, color = "Skenario") +
+      theme_minimal()
+  } else {
+    ggplot(data, aes(x = YEAR, y = .data[[value_col]])) +
+      geom_line(linewidth = 1, color = "#4472C4") +
+      geom_point(size = 3, color = "#4472C4") +
+      scale_x_continuous(breaks = unique(data$YEAR)) +
+      labs(title = title, x = "Tahun", y = y_label) +
+      theme_minimal()
+  }
+}
+
+create_comparison_table <- function(data, value_col) {
+  data |>
+    dplyr::select(YEAR, SCENARIO, dplyr::all_of(value_col)) |>
+    tidyr::pivot_wider(
+      names_from = SCENARIO,
+      values_from = dplyr::all_of(value_col)
+    ) |>
+    dplyr::arrange(YEAR)
+}
+
+interpret_projection <- function(data, value_col, indicator_name) {
+  first_value <- data[[value_col]][1]
+  last_value <- data[[value_col]][nrow(data)]
+  change_pct <- (last_value - first_value) / first_value * 100
+  trend <- ifelse(change_pct > 0, "meningkat", "menurun")
+  cat(paste0(
+    "Selama periode proyeksi, ", indicator_name,
+    " menunjukkan tren ", trend, " sebesar ",
+    round(abs(change_pct), 2),
+    "% dibandingkan tahun awal proyeksi."
+  ))
+}
+```
+
+# Hasil Proyeksi — Mode: `r params$mode`
+Jumlah skenario: `r length(all_projections)` (BAU + `r length(all_projections) - 1` intervensi)
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Dapatkan daftar skenario untuk header tabel
+scenario_names <- names(all_projections)
+```
+
+## Proyeksi PDRB (IDR/Tahun)
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+gdp_comparison <- projection_combined |>
+  dplyr::group_by(YEAR, SCENARIO) |>
+  dplyr::summarise(GDP = sum(GDP), .groups = "drop")
+
+gdp_base <- data.frame(
+  YEAR = initial_year,
+  SCENARIO = unique(gdp_comparison$SCENARIO),
+  GDP = sum(gdp_baseline$GDP)
+)
+
+gdp_comparison <- rbind(gdp_base, gdp_comparison) |>
+  dplyr::arrange(SCENARIO, YEAR)
+
+gdp_wide <- create_comparison_table(gdp_comparison, "GDP")
+
+DT::datatable(gdp_wide, rownames = FALSE, 
+  caption = "Perbandingan PDRB per Skenario (IDR/Tahun)") %>%
+  DT::formatRound(columns = 2:ncol(gdp_wide), digits = 2, mark = ",")
+
+plot_comparison(gdp_comparison, "GDP", "Perbandingan Proyeksi PDRB", "IDR/Tahun")
+```
+
+## Proyeksi Serapan Tenaga Kerja (Orang/Tahun)
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+labour_comparison <- projection_combined |>
+  dplyr::group_by(YEAR, SCENARIO) |>
+  dplyr::summarise(LABOUR = sum(LABOUR), .groups = "drop")
+
+labour_base <- data.frame(
+  YEAR = initial_year,
+  SCENARIO = unique(labour_comparison$SCENARIO),
+  LABOUR = sum(labour_multiplier$Labour)
+)
+
+labour_comparison <- rbind(labour_base, labour_comparison) |>
+  dplyr::arrange(SCENARIO, YEAR)
+
+labour_wide <- create_comparison_table(labour_comparison, "LABOUR")
+
+DT::datatable(labour_wide, rownames = FALSE,
+  caption = "Perbandingan Serapan Tenaga Kerja per Skenario (Orang/Tahun)") %>%
+  DT::formatRound(columns = 2:ncol(labour_wide), digits = 2, mark = ",")
+
+plot_comparison(labour_comparison, "LABOUR", "Perbandingan Proyeksi Serapan Tenaga Kerja", "Orang/Tahun")
+```
+
+## Proyeksi Pendapatan Tenaga Kerja (IDR/Tahun)
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+income_comparison <- projection_combined |>
+  dplyr::group_by(YEAR, SCENARIO) |>
+  dplyr::summarise(INCOME = sum(INCOME), .groups = "drop")
+
+income_base <- data.frame(
+  YEAR = initial_year,
+  SCENARIO = unique(income_comparison$SCENARIO),
+  INCOME = sum(labour_multiplier$Labour_Compensation)
+)
+
+income_comparison <- rbind(income_base, income_comparison) |>
+  dplyr::arrange(SCENARIO, YEAR)
+
+income_wide <- create_comparison_table(income_comparison, "INCOME")
+
+DT::datatable(income_wide, rownames = FALSE,
+  caption = "Perbandingan Pendapatan Tenaga Kerja per Skenario (IDR/Tahun)") %>%
+  DT::formatRound(columns = 2:ncol(income_wide), digits = 2, mark = ",")
+
+plot_comparison(income_comparison, "INCOME", "Perbandingan Proyeksi Pendapatan Tenaga Kerja", "IDR/Tahun")
+```
+
+## Proyeksi Surplus Usaha Bruto (IDR/Tahun)
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+surplus_comparison <- projection_combined |>
+  dplyr::group_by(YEAR, SCENARIO) |>
+  dplyr::summarise(SURPLUS = sum(SURPLUS), .groups = "drop")
+
+surplus_base <- data.frame(
+  YEAR = initial_year,
+  SCENARIO = unique(surplus_comparison$SCENARIO),
+  SURPLUS = sum(SUB_multiplier$Surplus)
+)
+
+surplus_comparison <- rbind(surplus_base, surplus_comparison) |>
+  dplyr::arrange(SCENARIO, YEAR)
+
+surplus_wide <- create_comparison_table(surplus_comparison, "SURPLUS")
+
+DT::datatable(surplus_wide, rownames = FALSE,
+  caption = "Perbandingan Surplus Usaha Bruto per Skenario (IDR/Tahun)") %>%
+  DT::formatRound(columns = 2:ncol(surplus_wide), digits = 2, mark = ",")
+
+plot_comparison(surplus_comparison, "SURPLUS", "Perbandingan Proyeksi Surplus Usaha Bruto", "IDR/Tahun")
+```
+
+## Keterkaitan antar Sektor Lahan antar Skenario per Tahun
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# ITFL
+itfl_comparison <- projection_combined |>
+  dplyr::group_by(YEAR, SCENARIO) |>
+  dplyr::summarise(ITFL = mean(ITFL, na.rm = TRUE), .groups = "drop")
+
+itfl_base <- data.frame(
+  YEAR = initial_year,
+  SCENARIO = unique(itfl_comparison$SCENARIO),
+  ITFL = mean(linkage_table$ITFL, na.rm = TRUE)
+)
+
+itfl_comparison <- rbind(itfl_base, itfl_comparison) |>
+  dplyr::arrange(SCENARIO, YEAR)
+
+itfl_wide <- create_comparison_table(itfl_comparison, "ITFL")
+
+DT::datatable(itfl_wide, rownames = FALSE,
+  caption = "Perbandingan Forward Linkage (ITFL) per Skenario") %>%
+  DT::formatRound(columns = 2:ncol(itfl_wide), digits = 2)
+
+plot_comparison(itfl_comparison, "ITFL", "Perbandingan Keterkaitan ke Depan (ITFL)", "Indeks")
+
+# ITBL
+itbl_comparison <- projection_combined |>
+  dplyr::group_by(YEAR, SCENARIO) |>
+  dplyr::summarise(ITBL = mean(ITBL, na.rm = TRUE), .groups = "drop")
+
+itbl_base <- data.frame(
+  YEAR = initial_year,
+  SCENARIO = unique(itbl_comparison$SCENARIO),
+  ITBL = mean(linkage_table$ITBL, na.rm = TRUE)
+)
+
+itbl_comparison <- rbind(itbl_base, itbl_comparison) |>
+  dplyr::arrange(SCENARIO, YEAR)
+
+itbl_wide <- create_comparison_table(itbl_comparison, "ITBL")
+
+DT::datatable(itbl_wide, rownames = FALSE,
+  caption = "Perbandingan Backward Linkage (ITBL) per Skenario") %>%
+  DT::formatRound(columns = 2:ncol(itbl_wide), digits = 2)
+
+plot_comparison(itbl_comparison, "ITBL", "Perbandingan Keterkaitan ke Belakang (ITBL)", "Indeks")
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# =====================================================
+# TEMPLATE EXCEL UNTUK 5 INPUT SKENARIO
+# =====================================================
+
+create_scenario_templates <- function(
+    gdp_baseline,
+    code_registry,
+    initial_year,
+    end_year,
+    time_step,
+    output_path = "Scenario_Input_Templates.xlsx"
+) {
+  
+  if (!requireNamespace("openxlsx", quietly = TRUE)) {
+    stop("Package 'openxlsx' diperlukan. Install dengan: install.packages('openxlsx')")
+  }
+  
+  wb <- openxlsx::createWorkbook()
+  
+  # ==========================================
+  # AMBIL DATA SEKTOR DENGAN AMAN
+  # ==========================================
+  
+  # gdp_baseline TIDAK punya kolom Sector_Code
+  # Buat kode sektor dari nomor baris
+  n_sectors <- nrow(gdp_baseline)
+  
+  if (n_sectors == 0) {
+    stop("gdp_baseline kosong. Periksa file IO_Analysis_Output.xlsx sheet GDP.")
+  }
+  
+  sector_codes <- as.character(1:n_sectors)
+  sector_names <- as.character(gdp_baseline$SECTOR)
+  
+  message("Jumlah sektor: ", n_sectors)
+  message("Contoh nama sektor: ", paste(head(sector_names, 5), collapse = ", "))
+  
+  # ==========================================
+  # STYLES
+  # ==========================================
+  header_style <- openxlsx::createStyle(
+    fontColour = "#FFFFFF",
+    fgFill = "#4472C4",
+    halign = "CENTER",
+    textDecoration = "bold",
+    border = "TopBottomLeftRight",
+    borderColour = "#1F3864"
+  )
+  
+  editable_style <- openxlsx::createStyle(
+    fgFill = "#FFF2CC",
+    border = "TopBottomLeftRight"
+  )
+  
+  info_style <- openxlsx::createStyle(
+    fgFill = "#D9D9D9",
+    border = "TopBottomLeftRight"
+  )
+  
+  title_style <- openxlsx::createStyle(
+    fontSize = 12,
+    textDecoration = "bold",
+    fgFill = "#2F5496",
+    fontColour = "#FFFFFF"
+  )
+  
+  # ==========================================
+  # PERIODE
+  # ==========================================
+  periods_df <- create_period_table(initial_year, end_year, time_step)
+  years_proj <- seq(initial_year + time_step, end_year, by = time_step)
+  n_periods <- nrow(periods_df)
+  
+  # ==========================================
+  # SHEET 1: README
+  # ==========================================
+  openxlsx::addWorksheet(wb, "README")
+  
+  instructions_text <- c(
+    "PETUNJUK PENGISIAN TEMPLATE SKENARIO",
+    "",
+    "CATATAN PENTING:",
+    "  - Kode sektor (Sector_Code) adalah NOMOR BARIS sektor di sheet GDP (1, 2, 3, ...)",
+    "  - Lihat sheet Code_Registry_Ref untuk daftar lengkap kode dan nama sektor",
+    "",
+    "Sheet 1_Luasan_Lahan (WAJIB)",
+    "  - Format: ID, LC, dan tahun-tahun proyeksi",
+    "  - Nilai dalam hektar",
+    "",
+    "Sheet 2_Distribusi_Lahan (Opsional)",
+    "  - Proporsi distribusi lahan (0-1) per Land Cover ke setiap sektor",
+    "  - Total per kolom sektor HARUS = 1",
+    "",
+    "Sheet 3_Growth_Rate (Opsional)",
+    "  - Kolom: Sector_Code, Sector, Growth_Rate",
+    "  - Growth_Rate dalam desimal (misal 0.035 untuk 3.5%)",
+    "",
+    "Sheet 4_Produktivitas_LPC (Opsional)",
+    "  - Crop_Type: 'annual' (semusim) atau 'perennial' (tahunan)",
+    "",
+    "Sheet 5_Perubahan_IO (Opsional)",
+    "  - Row_Code & Col_Code: kode baris/kolom pada Full IO Table",
+    "  - Change_Pct: persentase perubahan (10 = +10%, -5 = -5%)",
+    "",
+    "Sheet Code_Registry_Ref (Referensi)",
+    "  - Daftar lengkap kode sektor dan komponen IO",
+    "",
+    "Sheet 6_Intensitas (Opsional)",
+    "  - Intensity: 0-100, seberapa besar efek skenario diterapkan"
+  )
+  
+  instructions <- data.frame(
+    No = seq_along(instructions_text),
+    Keterangan = instructions_text,
+    stringsAsFactors = FALSE
+  )
+  
+  openxlsx::writeData(wb, "README", instructions, startRow = 1, startCol = 1)
+  openxlsx::addStyle(wb, "README", header_style, rows = 1, cols = 1:2, gridExpand = TRUE)
+  openxlsx::setColWidths(wb, "README", cols = 1, widths = 6)
+  openxlsx::setColWidths(wb, "README", cols = 2, widths = 95)
+  
+  # ==========================================
+  # SHEET 2: LUASAN LAHAN (WAJIB)
+  # ==========================================
+  openxlsx::addWorksheet(wb, "1_Luasan_Lahan")
+  
+  n_lc_example <- 5
+  
+  luasan_list <- list(
+    ID = 1:n_lc_example,
+    LC = c("Sawah Irigasi", "Sawah Tadah Hujan", "Kebun Campuran", "Hutan", "Permukiman")
+  )
+  
+  for (yr in years_proj) {
+    luasan_list[[as.character(yr)]] <- rep(0, n_lc_example)
+  }
+  
+  luasan_template <- as.data.frame(luasan_list, stringsAsFactors = FALSE)
+  n_col_luasan <- ncol(luasan_template)
+  
+  openxlsx::writeData(wb, "1_Luasan_Lahan", 
+    "Sheet WAJIB — Isi luas lahan (hektar) untuk setiap Land Cover di setiap tahun proyeksi",
+    startRow = 1, startCol = 1
+  )
+  openxlsx::mergeCells(wb, "1_Luasan_Lahan", cols = 1:n_col_luasan, rows = 1)
+  openxlsx::addStyle(wb, "1_Luasan_Lahan", title_style, rows = 1, cols = 1)
+  
+  openxlsx::writeData(wb, "1_Luasan_Lahan", luasan_template, startRow = 3, startCol = 1)
+  openxlsx::addStyle(wb, "1_Luasan_Lahan", header_style, rows = 3, cols = 1:n_col_luasan, gridExpand = TRUE)
+  
+  openxlsx::addStyle(wb, "1_Luasan_Lahan", info_style,
+    rows = 4:(n_lc_example + 3), cols = 1:2, gridExpand = TRUE
+  )
+  
+  if (n_col_luasan > 2) {
+    openxlsx::addStyle(wb, "1_Luasan_Lahan", editable_style,
+      rows = 4:(n_lc_example + 3), cols = 3:n_col_luasan, gridExpand = TRUE
+    )
+  }
+  
+  openxlsx::setColWidths(wb, "1_Luasan_Lahan", cols = 1, widths = 8)
+  openxlsx::setColWidths(wb, "1_Luasan_Lahan", cols = 2, widths = 24)
+  openxlsx::setColWidths(wb, "1_Luasan_Lahan", cols = 3:n_col_luasan, widths = 14)
+  
+  # ==========================================
+  # SHEET 3: DISTRIBUSI LAHAN (OPSIONAL)
+  # ==========================================
+  openxlsx::addWorksheet(wb, "2_Distribusi_Lahan")
+  
+  n_lc_dist <- 5
+  
+  # Nama kolom pendek: S1, S2, S3, ...
+  short_sector_names <- paste0("S", sector_codes)
+  
+  dist_list <- list(
+    ID = 1:n_lc_dist,
+    LC = c("Sawah Irigasi", "Sawah Tadah Hujan", "Kebun Campuran", "Hutan", "Permukiman"),
+    Land_Class = c("Agriculture", "Agriculture", "Agriculture", "Forest", "Settlement")
+  )
+  
+  for (nm in short_sector_names) {
+    dist_list[[nm]] <- rep(0, n_lc_dist)
+  }
+  
+  distribusi_template <- as.data.frame(dist_list, stringsAsFactors = FALSE)
+  n_col_dist <- ncol(distribusi_template)
+  
+  openxlsx::writeData(wb, "2_Distribusi_Lahan",
+    "Sheet OPSIONAL — Isi proporsi distribusi lahan (0-1) per Land Cover ke setiap sektor. Total per kolom sektor HARUS = 1. Kosongkan jika ingin menggunakan baseline.",
+    startRow = 1, startCol = 1
+  )
+  openxlsx::mergeCells(wb, "2_Distribusi_Lahan", cols = 1:n_col_dist, rows = 1)
+  openxlsx::addStyle(wb, "2_Distribusi_Lahan", title_style, rows = 1, cols = 1)
+  
+  # Legend dalam 1 baris
+  legend_parts <- paste0(short_sector_names, "=", sector_names)
+  legend_text <- paste0("LEGENDA: ", paste(legend_parts, collapse = " | "))
+  openxlsx::writeData(wb, "2_Distribusi_Lahan", legend_text, startRow = 2, startCol = 1)
+  
+  data_start_row <- 4
+  
+  openxlsx::writeData(wb, "2_Distribusi_Lahan", distribusi_template, startRow = data_start_row, startCol = 1)
+  openxlsx::addStyle(wb, "2_Distribusi_Lahan", header_style, rows = data_start_row, cols = 1:n_col_dist, gridExpand = TRUE)
+  
+  openxlsx::addStyle(wb, "2_Distribusi_Lahan", info_style,
+    rows = (data_start_row + 1):(n_lc_dist + data_start_row), cols = 1:3, gridExpand = TRUE
+  )
+  openxlsx::addStyle(wb, "2_Distribusi_Lahan", editable_style,
+    rows = (data_start_row + 1):(n_lc_dist + data_start_row), cols = 4:n_col_dist, gridExpand = TRUE
+  )
+  
+  openxlsx::setColWidths(wb, "2_Distribusi_Lahan", cols = 1, widths = 6)
+  openxlsx::setColWidths(wb, "2_Distribusi_Lahan", cols = 2, widths = 22)
+  openxlsx::setColWidths(wb, "2_Distribusi_Lahan", cols = 3, widths = 16)
+  openxlsx::setColWidths(wb, "2_Distribusi_Lahan", cols = 4:n_col_dist, widths = 10)
+  
+  # SUM check
+  row_check <- n_lc_dist + data_start_row + 1
+  openxlsx::writeData(wb, "2_Distribusi_Lahan", "TOTAL =", startRow = row_check, startCol = 1)
+  
+  for (col_idx in 4:n_col_dist) {
+    col_letter <- openxlsx::int2col(col_idx)
+    formula_text <- paste0("SUM(", col_letter, data_start_row + 1, ":", col_letter, row_check - 1, ")")
+    openxlsx::writeFormula(wb, "2_Distribusi_Lahan", formula_text,
+      startRow = row_check, startCol = col_idx
+    )
+  }
+  
+  # ==========================================
+  # SHEET 4: GROWTH RATE (OPSIONAL)
+  # ==========================================
+  openxlsx::addWorksheet(wb, "3_Growth_Rate")
+  
+  growth_list <- list(
+    Sector_Code = sector_codes,
+    Sector = sector_names,
+    Growth_Rate = rep(0.03, n_sectors)
+  )
+  
+  growth_template <- as.data.frame(growth_list, stringsAsFactors = FALSE)
+  n_row_growth <- nrow(growth_template)
+  
+  openxlsx::writeData(wb, "3_Growth_Rate",
+    "Sheet OPSIONAL — Isi laju pertumbuhan per sektor (desimal). Contoh: 0.035 = 3.5% per tahun. Kosongkan/hapus jika ingin menggunakan baseline dari IO_Analysis_Output.xlsx.",
+    startRow = 1, startCol = 1
+  )
+  openxlsx::mergeCells(wb, "3_Growth_Rate", cols = 1:3, rows = 1)
+  openxlsx::addStyle(wb, "3_Growth_Rate", title_style, rows = 1, cols = 1)
+  
+  openxlsx::writeData(wb, "3_Growth_Rate", growth_template, startRow = 3, startCol = 1)
+  openxlsx::addStyle(wb, "3_Growth_Rate", header_style, rows = 3, cols = 1:3, gridExpand = TRUE)
+  
+  openxlsx::addStyle(wb, "3_Growth_Rate", info_style,
+    rows = 4:(n_row_growth + 3), cols = 1:2, gridExpand = TRUE
+  )
+  openxlsx::addStyle(wb, "3_Growth_Rate", editable_style,
+    rows = 4:(n_row_growth + 3), cols = 3, gridExpand = TRUE
+  )
+  
+  openxlsx::setColWidths(wb, "3_Growth_Rate", cols = 1, widths = 14)
+  openxlsx::setColWidths(wb, "3_Growth_Rate", cols = 2, widths = 50)
+  openxlsx::setColWidths(wb, "3_Growth_Rate", cols = 3, widths = 16)
+  
+  # ==========================================
+  # SHEET 5: PRODUKTIVITAS LPC (OPSIONAL)
+  # ==========================================
+  openxlsx::addWorksheet(wb, "4_Produktivitas_LPC")
+  
+  example_n <- min(3, n_sectors)
+  lpc_sector_codes <- sector_codes[1:example_n]
+  lpc_sector_names <- sector_names[1:example_n]
+  n_row_lpc <- example_n * n_periods
+  
+  lpc_list <- list(
+    Sector_Code = rep(lpc_sector_codes, each = n_periods),
+    Sector = rep(lpc_sector_names, each = n_periods),
+    Start_Year = rep(periods_df$Start_Year, example_n),
+    End_Year = rep(periods_df$End_Year, example_n),
+    Increment_Rate = rep(0.02, n_row_lpc),
+    Area_Implemented = rep(50, n_row_lpc),
+    Crop_Type = rep("annual", n_row_lpc)
+  )
+  
+  lpc_template <- as.data.frame(lpc_list, stringsAsFactors = FALSE)
+  
+  openxlsx::writeData(wb, "4_Produktivitas_LPC",
+    "Sheet OPSIONAL — Isi skenario peningkatan produktivitas. Crop_Type: 'annual' (semusim) atau 'perennial' (tahunan). Hapus baris contoh jika tidak digunakan.",
+    startRow = 1, startCol = 1
+  )
+  openxlsx::mergeCells(wb, "4_Produktivitas_LPC", cols = 1:7, rows = 1)
+  openxlsx::addStyle(wb, "4_Produktivitas_LPC", title_style, rows = 1, cols = 1)
+  
+  openxlsx::writeData(wb, "4_Produktivitas_LPC", "RUMUS:", startRow = 2, startCol = 1)
+  openxlsx::writeData(wb, "4_Produktivitas_LPC",
+    "LPC Baru = LPC_current + (LPC_current x LPC_Growth_Rate)",
+    startRow = 3, startCol = 1
+  )
+  openxlsx::writeData(wb, "4_Produktivitas_LPC",
+    "Annual   : LPC_Growth_Rate = Increment_Rate x (Area_Implemented/100)",
+    startRow = 4, startCol = 1
+  )
+  openxlsx::writeData(wb, "4_Produktivitas_LPC",
+    "Perennial: LPC_Growth_Rate = SUM(semua Increment_Rate s/d periode ini) x (Area_Implemented/100)",
+    startRow = 5, startCol = 1
+  )
+  
+  openxlsx::writeData(wb, "4_Produktivitas_LPC", lpc_template, startRow = 7, startCol = 1)
+  openxlsx::addStyle(wb, "4_Produktivitas_LPC", header_style, rows = 7, cols = 1:7, gridExpand = TRUE)
+  
+  openxlsx::addStyle(wb, "4_Produktivitas_LPC", info_style,
+    rows = 8:(n_row_lpc + 7), cols = 1:4, gridExpand = TRUE
+  )
+  openxlsx::addStyle(wb, "4_Produktivitas_LPC", editable_style,
+    rows = 8:(n_row_lpc + 7), cols = 5:7, gridExpand = TRUE
+  )
+  
+  openxlsx::setColWidths(wb, "4_Produktivitas_LPC", cols = 1:2, widths = 14)
+  openxlsx::setColWidths(wb, "4_Produktivitas_LPC", cols = 3:4, widths = 12)
+  openxlsx::setColWidths(wb, "4_Produktivitas_LPC", cols = 5:6, widths = 18)
+  openxlsx::setColWidths(wb, "4_Produktivitas_LPC", cols = 7, widths = 14)
+  
+  if (n_row_lpc > 0) {
+    openxlsx::dataValidation(wb, "4_Produktivitas_LPC",
+      cols = 7,
+      rows = 8:(n_row_lpc + 7),
+      type = "list",
+      value = '"annual,perennial"'
+    )
+  }
+  
+  # ==========================================
+  # SHEET 6: PERUBAHAN IO TABLE (OPSIONAL)
+  # ==========================================
+  openxlsx::addWorksheet(wb, "5_Perubahan_IO")
+  
+  n_io_example <- 3
+  
+  io_list <- list(
+    Start_Year = rep(periods_df$Start_Year[1], n_io_example),
+    End_Year = rep(periods_df$End_Year[1], n_io_example),
+    Row_Code = c(5, 12, 8),
+    Row_Description = rep("(isi deskripsi)", n_io_example),
+    Col_Code = c(8, 3, 15),
+    Col_Description = rep("(isi deskripsi)", n_io_example),
+    Change_Pct = c(10, -5, 20)
+  )
+  
+  io_template <- as.data.frame(io_list, stringsAsFactors = FALSE)
+  
+  openxlsx::writeData(wb, "5_Perubahan_IO",
+    "Sheet OPSIONAL — Isi perubahan persentase pada sel Full IO Table. Change_Pct positif = kenaikan, negatif = penurunan. Lihat sheet Code_Registry_Ref untuk referensi Row_Code dan Col_Code.",
+    startRow = 1, startCol = 1
+  )
+  openxlsx::mergeCells(wb, "5_Perubahan_IO", cols = 1:7, rows = 1)
+  openxlsx::addStyle(wb, "5_Perubahan_IO", title_style, rows = 1, cols = 1)
+  
+  openxlsx::writeData(wb, "5_Perubahan_IO", io_template, startRow = 3, startCol = 1)
+  openxlsx::addStyle(wb, "5_Perubahan_IO", header_style, rows = 3, cols = 1:7, gridExpand = TRUE)
+  
+  openxlsx::addStyle(wb, "5_Perubahan_IO", editable_style,
+    rows = 4:(n_io_example + 3), cols = c(1, 2, 3, 5, 7), gridExpand = TRUE
+  )
+  openxlsx::addStyle(wb, "5_Perubahan_IO", info_style,
+    rows = 4:(n_io_example + 3), cols = c(4, 6), gridExpand = TRUE
+  )
+  
+  openxlsx::setColWidths(wb, "5_Perubahan_IO", cols = 1:2, widths = 12)
+  openxlsx::setColWidths(wb, "5_Perubahan_IO", cols = 3, widths = 14)
+  openxlsx::setColWidths(wb, "5_Perubahan_IO", cols = 4, widths = 20)
+  openxlsx::setColWidths(wb, "5_Perubahan_IO", cols = 5, widths = 14)
+  openxlsx::setColWidths(wb, "5_Perubahan_IO", cols = 6, widths = 20)
+  openxlsx::setColWidths(wb, "5_Perubahan_IO", cols = 7, widths = 16)
+  
+  # ==========================================
+  # SHEET 7: CODE REGISTRY (REFERENSI)
+  # ==========================================
+  openxlsx::addWorksheet(wb, "Code_Registry_Ref")
+  
+  # Buat tabel referensi sektor dari gdp_baseline
+  ref_table <- data.frame(
+    Row_Index = 1:n_sectors,
+    Sector_Code = sector_codes,
+    Sector_Name = sector_names,
+    Category = gdp_baseline$CATEGORY,
+    Type = "Sector",
+    stringsAsFactors = FALSE
+  )
+  
+  # Jika code_registry ada dan tidak kosong, gunakan itu
+  if (!is.null(code_registry) && nrow(code_registry) > 0) {
+    ref_table <- code_registry
+  }
+  
+  n_col_ref <- ncol(ref_table)
+  
+  openxlsx::writeData(wb, "Code_Registry_Ref",
+    "REFERENSI — Daftar kode sektor dan komponen IO. Gunakan Row_Index untuk mengisi Row_Code dan Col_Code pada sheet 5_Perubahan_IO.",
+    startRow = 1, startCol = 1
+  )
+  openxlsx::mergeCells(wb, "Code_Registry_Ref", cols = 1:n_col_ref, rows = 1)
+  openxlsx::addStyle(wb, "Code_Registry_Ref", title_style, rows = 1, cols = 1)
+  
+  openxlsx::writeData(wb, "Code_Registry_Ref", ref_table, startRow = 3, startCol = 1)
+  openxlsx::addStyle(wb, "Code_Registry_Ref", header_style, rows = 3, cols = 1:n_col_ref, gridExpand = TRUE)
+  
+  openxlsx::setColWidths(wb, "Code_Registry_Ref", cols = 1:n_col_ref, widths = 20)
+  
+  # ==========================================
+  # SHEET 8: INTENSITAS IMPLEMENTASI (OPSIONAL)
+  # ==========================================
+  openxlsx::addWorksheet(wb, "6_Intensitas")
+  
+  example_n_int <- min(3, n_sectors)
+  int_sector_codes <- sector_codes[1:example_n_int]
+  int_sector_names <- sector_names[1:example_n_int]
+  n_row_intensity <- example_n_int * n_periods
+  
+  int_list <- list(
+    Sector_Code = rep(int_sector_codes, each = n_periods),
+    Sector = rep(int_sector_names, each = n_periods),
+    Start_Year = rep(periods_df$Start_Year, example_n_int),
+    End_Year = rep(periods_df$End_Year, example_n_int),
+    Intensity = rep(100, n_row_intensity)
+  )
+  
+  intensity_template <- as.data.frame(int_list, stringsAsFactors = FALSE)
+  
+  openxlsx::writeData(wb, "6_Intensitas",
+    "Sheet OPSIONAL — Isi intensitas implementasi skenario per sektor per periode (0-100). 100 = skenario diterapkan penuh, 0 = tidak ada efek (kembali ke baseline). Hapus baris contoh jika tidak digunakan.",
+    startRow = 1, startCol = 1
+  )
+  openxlsx::mergeCells(wb, "6_Intensitas", cols = 1:5, rows = 1)
+  openxlsx::addStyle(wb, "6_Intensitas", title_style, rows = 1, cols = 1)
+  
+  openxlsx::writeData(wb, "6_Intensitas",
+    "Rumus: FD_effective = FD_baseline + (Intensity/100) x (FD_skenario - FD_baseline)",
+    startRow = 2, startCol = 1
+  )
+  
+  openxlsx::writeData(wb, "6_Intensitas", intensity_template, startRow = 4, startCol = 1)
+  openxlsx::addStyle(wb, "6_Intensitas", header_style, rows = 4, cols = 1:5, gridExpand = TRUE)
+  
+  openxlsx::addStyle(wb, "6_Intensitas", info_style,
+    rows = 5:(n_row_intensity + 4), cols = 1:4, gridExpand = TRUE
+  )
+  openxlsx::addStyle(wb, "6_Intensitas", editable_style,
+    rows = 5:(n_row_intensity + 4), cols = 5, gridExpand = TRUE
+  )
+  
+  openxlsx::setColWidths(wb, "6_Intensitas", cols = 1:2, widths = 14)
+  openxlsx::setColWidths(wb, "6_Intensitas", cols = 3:4, widths = 12)
+  openxlsx::setColWidths(wb, "6_Intensitas", cols = 5, widths = 14)
+  
+  if (n_row_intensity > 0) {
+    openxlsx::dataValidation(wb, "6_Intensitas",
+      cols = 5,
+      rows = 5:(n_row_intensity + 4),
+      type = "whole",
+      operator = "between",
+      value = c(0, 100)
+    )
+  }
+  
+  # ==========================================
+  # SIMPAN
+  # ==========================================
+  message("Menyimpan workbook...")
+  openxlsx::saveWorkbook(wb, output_path, overwrite = TRUE)
+  
+  message("Template berhasil disimpan di: ", normalizePath(output_path))
+  return(output_path)
+}
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, eval=params$mode=="BAU"}
+# =====================================================
+# 9. TEMPLATE UTAMA + FILE PER SKENARIO (HANYA MODE BAU)
+# =====================================================
+
+message("Mode BAU: Menghasilkan template untuk ", n_scenarios, " skenario...")
+
+# ==========================================
+# A. TEMPLATE UTAMA (Scenario_Input_Templates.xlsx)
+# ==========================================
+create_scenario_templates(
+  gdp_baseline  = gdp_baseline,
+  code_registry = code_registry,
+  initial_year  = initial_year,
+  end_year      = end_year,
+  time_step     = time_step,
+  output_path   = "data/Scenario_Input_Templates.xlsx"
+)
+
+# ==========================================
+# B. FILE INPUT PER SKENARIO (ANGKA REALISTIS)
+# ==========================================
+n_sectors <- nrow(gdp_baseline)
+sector_codes <- as.character(1:n_sectors)
+sector_names <- as.character(gdp_baseline$SECTOR)
+n_periods <- length(seq(initial_year + time_step, end_year, by = time_step))
+periods_df <- create_period_table(initial_year, end_year, time_step)
+lc_list <- projection_area[, c("ID", "LC")]
+n_lc <- nrow(lc_list)
+
+# Ambil growth rate baseline untuk referensi
+if (!is.null(growth_rate) && ncol(growth_rate) >= 1) {
+  r_baseline <- as.numeric(growth_rate[[1]])
+} else {
+  r_baseline <- rep(0.03, n_sectors)
+}
+
+header_style <- openxlsx::createStyle(
+  fontColour = "#FFFFFF", fgFill = "#4472C4", halign = "CENTER",
+  textDecoration = "bold", border = "TopBottomLeftRight"
+)
+
+# Tema untuk setiap skenario (agar hasilnya berbeda tapi masuk akal)
+scenario_themes <- list(
+  list(
+    nama = "Pertanian Maju",
+    deskripsi = "Fokus pada peningkatan produktivitas pertanian dan agroindustri",
+    growth_modifier = c(1.3, 1.2, 1.1, rep(1.0, n_sectors-3)),  # sektor awal naik
+    intensitas_awal = 80,
+    intensitas_trend = "naik",
+    lpc_fokus = c(1, 2),       # sektor 1-2 (pertanian)
+    io_change_fokus = c(1, 3)   # intermediate dari sektor 1 ke 3
+  ),
+  list(
+    nama = "Industri Hilir",
+    deskripsi = "Fokus pada industrialisasi dan pengolahan",
+    growth_modifier = c(rep(1.0, 3), 1.4, 1.3, 1.2, rep(1.0, n_sectors-6)),
+    intensitas_awal = 60,
+    intensitas_trend = "naik",
+    lpc_fokus = c(3, 4),       # sektor 3-4 (industri)
+    io_change_fokus = c(3, 5)   # intermediate dari sektor 3 ke 5
+  ),
+  list(
+    nama = "Jasa & Perdagangan",
+    deskripsi = "Fokus pada sektor jasa dan perdagangan",
+    growth_modifier = c(rep(1.0, 5), 1.3, 1.2, rep(1.0, n_sectors-7)),
+    intensitas_awal = 70,
+    intensitas_trend = "stabil",
+    lpc_fokus = c(5, 6),
+    io_change_fokus = c(5, 7)
+  )
+)
+
+for (s in 1:n_scenarios) {
+  
+  # Pilih tema (cycling jika n_scenarios > jumlah tema)
+  tema <- scenario_themes[[(s - 1) %% length(scenario_themes) + 1]]
+  
+  sc_folder <- paste0("data/scenario/scenario", s)
+  dir.create(sc_folder, showWarnings = FALSE, recursive = TRUE)
+  
+  message("  Membuat template Skenario ", s, ": ", tema$nama, "...")
+  
+  # Pastikan growth_modifier sesuai panjangnya
+  gm <- rep(1.0, n_sectors)
+  gm[1:min(length(tema$growth_modifier), n_sectors)] <- tema$growth_modifier[1:min(length(tema$growth_modifier), n_sectors)]
+  
+  # ========================================
+  # 1. DISTRIBUSI LAHAN
+  # ========================================
+  wb1 <- openxlsx::createWorkbook()
+  openxlsx::addWorksheet(wb1, "Distribusi_Lahan")
+  
+  short_sector_names <- paste0("S", sector_codes)
+  dist_mat <- matrix(0, nrow = n_lc, ncol = n_sectors)
+  colnames(dist_mat) <- short_sector_names
+  
+  set.seed(100 + s)
+  
+  # Fokuskan distribusi ke sektor-sektor tertentu sesuai tema
+  sektor_fokus <- tema$lpc_fokus
+  for (j in sektor_fokus) {
+    if (j <= n_sectors) {
+      dist_mat[, j] <- runif(n_lc, 0.3, 0.7)  # nilai lebih tinggi untuk sektor fokus
+    }
+  }
+  
+  # Sektor lain dapat nilai kecil
+  sektor_lain <- setdiff(1:n_sectors, sektor_fokus)
+  for (j in sektor_lain) {
+    dist_mat[, j] <- runif(n_lc, 0, 0.15)
+  }
+  
+  # Normalisasi
+  for (i in 1:n_lc) {
+    row_sum <- sum(dist_mat[i, ])
+    if (row_sum > 0) dist_mat[i, ] <- round(dist_mat[i, ] / row_sum, 4)
+  }
+  
+  dist_df <- data.frame(
+    ID = lc_list$ID, LC = lc_list$LC, Land_Class = rep("Mixed", n_lc),
+    dist_mat, stringsAsFactors = FALSE, check.names = FALSE
+  )
+  
+  openxlsx::writeData(wb1, "Distribusi_Lahan", dist_df, startRow = 1, startCol = 1)
+  openxlsx::addStyle(wb1, "Distribusi_Lahan", header_style, rows = 1, cols = 1:ncol(dist_df), gridExpand = TRUE)
+  openxlsx::setColWidths(wb1, "Distribusi_Lahan", cols = 1:3, widths = c(6, 24, 16))
+  openxlsx::setColWidths(wb1, "Distribusi_Lahan", cols = 4:ncol(dist_df), widths = 10)
+  openxlsx::freezePane(wb1, "Distribusi_Lahan", firstCol = TRUE, firstRow = TRUE)
+  openxlsx::saveWorkbook(wb1, file.path(sc_folder, "distribusi_lahan.xlsx"), overwrite = TRUE)
+  
+  # ========================================
+  # 2. GROWTH RATE (realistis: 2-6%, berbeda per skenario)
+  # ========================================
+  wb2 <- openxlsx::createWorkbook()
+  openxlsx::addWorksheet(wb2, "Growth_Rate")
+  set.seed(200 + s)
+  
+  # Growth rate = baseline * modifier dengan sedikit noise
+  growth_rates <- r_baseline * gm * runif(n_sectors, 0.9, 1.1)
+  growth_rates <- round(pmin(growth_rates, 0.07), 4)  # cap 7%
+  
+  growth_df <- data.frame(
+    Sector_Code = sector_codes,
+    Sector = sector_names,
+    Growth_Rate = growth_rates,
+    stringsAsFactors = FALSE
+  )
+  
+  openxlsx::writeData(wb2, "Growth_Rate", growth_df, startRow = 1, startCol = 1)
+  openxlsx::addStyle(wb2, "Growth_Rate", header_style, rows = 1, cols = 1:3, gridExpand = TRUE)
+  openxlsx::setColWidths(wb2, "Growth_Rate", cols = 1:3, widths = c(14, 50, 16))
+  openxlsx::saveWorkbook(wb2, file.path(sc_folder, "growth_rate.xlsx"), overwrite = TRUE)
+  
+  # ========================================
+  # 3. PRODUKTIVITAS LPC
+  # ========================================
+  wb3 <- openxlsx::createWorkbook()
+  openxlsx::addWorksheet(wb3, "Produktivitas_LPC")
+  
+  lpc_fokus <- tema$lpc_fokus
+  lpc_fokus <- lpc_fokus[lpc_fokus <= n_sectors]
+  n_lpc_sectors <- length(lpc_fokus)
+  
+  if (n_lpc_sectors > 0) {
+    # Increment rate realistis: 0.5% - 3% per periode
+    increment_pattern <- seq(0.005, 0.03, length.out = n_periods)
+    area_pattern <- seq(30, 80, length.out = n_periods)  # 30% → 80% coverage
+    
+    lpc_df <- data.frame(
+      Sector_Code = rep(sector_codes[lpc_fokus], each = n_periods),
+      Sector = rep(sector_names[lpc_fokus], each = n_periods),
+      Start_Year = rep(periods_df$Start_Year, n_lpc_sectors),
+      End_Year = rep(periods_df$End_Year, n_lpc_sectors),
+      Increment_Rate = rep(increment_pattern, n_lpc_sectors),
+      Area_Implemented = rep(area_pattern, n_lpc_sectors),
+      Crop_Type = rep("annual", n_lpc_sectors * n_periods),
+      stringsAsFactors = FALSE
+    )
+    
+    openxlsx::writeData(wb3, "Produktivitas_LPC", lpc_df, startRow = 1, startCol = 1)
+    openxlsx::addStyle(wb3, "Produktivitas_LPC", header_style, rows = 1, cols = 1:7, gridExpand = TRUE)
+    openxlsx::setColWidths(wb3, "Produktivitas_LPC", cols = 1:7, widths = c(14, 14, 12, 12, 18, 18, 14))
+  } else {
+    openxlsx::writeData(wb3, "Produktivitas_LPC", 
+      data.frame(Info = "Tidak ada sektor fokus LPC untuk skenario ini"),
+      startRow = 1, startCol = 1)
+  }
+  openxlsx::saveWorkbook(wb3, file.path(sc_folder, "produktivitas_lpc.xlsx"), overwrite = TRUE)
+  
+  # ========================================
+  # 4. PERUBAHAN IO (realistis: ±5-15%)
+  # ========================================
+  wb4 <- openxlsx::createWorkbook()
+  openxlsx::addWorksheet(wb4, "Perubahan_IO")
+  
+  io_fokus <- tema$io_change_fokus
+  n_io <- min(3, n_periods)
+  
+  io_list <- list()
+  for (p in 1:n_io) {
+    if (length(io_fokus) >= 2 && io_fokus[1] <= n_sectors && io_fokus[2] <= n_sectors) {
+      io_list[[length(io_list) + 1]] <- data.frame(
+        Start_Year = periods_df$Start_Year[p],
+        End_Year = periods_df$End_Year[p],
+        Row_Code = io_fokus[1],
+        Col_Code = io_fokus[2],
+        Change_Pct = round(5 + (s * 3) + p * 2, 1),  # 7% - 16% range
+        stringsAsFactors = FALSE
+      )
+    }
+  }
+  
+  if (length(io_list) > 0) {
+    io_df <- do.call(rbind, io_list)
+    openxlsx::writeData(wb4, "Perubahan_IO", io_df, startRow = 1, startCol = 1)
+    openxlsx::addStyle(wb4, "Perubahan_IO", header_style, rows = 1, cols = 1:5, gridExpand = TRUE)
+  } else {
+    openxlsx::writeData(wb4, "Perubahan_IO",
+      data.frame(Info = "Tidak ada perubahan IO untuk skenario ini"),
+      startRow = 1, startCol = 1)
+  }
+  openxlsx::setColWidths(wb4, "Perubahan_IO", cols = 1:5, widths = c(12, 12, 14, 14, 16))
+  openxlsx::saveWorkbook(wb4, file.path(sc_folder, "perubahan_io.xlsx"), overwrite = TRUE)
+  
+  # ========================================
+  # 5. INTENSITAS (realistis: bertahap)
+  # ========================================
+  wb5 <- openxlsx::createWorkbook()
+  openxlsx::addWorksheet(wb5, "Intensitas")
+  
+  n_int_sectors <- min(8, n_sectors)
+  n_row_intensity <- n_int_sectors * n_periods
+  
+  if (tema$intensitas_trend == "naik") {
+    # Intensitas naik dari 50 ke 95
+    base_intensity <- seq(tema$intensitas_awal, 95, length.out = n_periods)
+  } else if (tema$intensitas_trend == "turun") {
+    base_intensity <- seq(tema$intensitas_awal, 30, length.out = n_periods)
+  } else {
+    # stabil
+    base_intensity <- rep(tema$intensitas_awal, n_periods)
+  }
+  
+  intensity_values <- rep(base_intensity, n_int_sectors)
+  
+  # Variasi kecil per sektor
+  set.seed(300 + s)
+  intensity_values <- intensity_values * runif(n_row_intensity, 0.9, 1.1)
+  intensity_values <- round(intensity_values)
+  intensity_values[intensity_values > 100] <- 100
+  intensity_values[intensity_values < 10] <- 10
+  
+  int_df <- data.frame(
+    Sector_Code = rep(sector_codes[1:n_int_sectors], each = n_periods),
+    Sector = rep(sector_names[1:n_int_sectors], each = n_periods),
+    Start_Year = rep(periods_df$Start_Year, n_int_sectors),
+    End_Year = rep(periods_df$End_Year, n_int_sectors),
+    Intensity = intensity_values,
+    stringsAsFactors = FALSE
+  )
+  
+  openxlsx::writeData(wb5, "Intensitas", int_df, startRow = 1, startCol = 1)
+  openxlsx::addStyle(wb5, "Intensitas", header_style, rows = 1, cols = 1:5, gridExpand = TRUE)
+  openxlsx::setColWidths(wb5, "Intensitas", cols = 1:5, widths = c(14, 14, 12, 12, 14))
+  openxlsx::saveWorkbook(wb5, file.path(sc_folder, "intensitas.xlsx"), overwrite = TRUE)
+  
+  message("    Tema: ", tema$nama, " | Growth modifier: +", 
+          round((mean(gm)-1)*100), "% | Intensitas: ", tema$intensitas_trend)
+}
+
+message("   Template untuk ", n_scenarios, " skenario berhasil dibuat")
+message("   Folder: data/scenario/scenario1, scenario2, ...")
+message("   Template utama: Scenario_Input_Templates.xlsx")
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, eval=params$mode=="BAU"}
+# =====================================================
+# 10. SIMPAN VARIABEL BAU KE RDATA
+# =====================================================
+
+# Pastikan folder data tersedia
+dir.create("data", showWarnings = FALSE, recursive = TRUE)
+
+# Daftar variabel penting yang dihasilkan dari proyeksi BAU
+bau_vars <- c(
+  # Data baseline & struktur IO
+  "gdp_baseline",
+  "leontief_matrix",
+  "full_io_table",
+  "code_registry",
+  "sector_idx",
+  "income_multiplier",
+  "labour_multiplier",
+  "SUB_multiplier",
+  "output_multiplier",
+  "linkage_table",
+  "land_prop",
+  "projection_area",
+  "growth_rate",
+  "P_default",
+  "area_matrix",
+  
+  # Hasil proyeksi BAU
+  "projection_bau",
+  "all_projections",
+  "projection_combined",
+  
+  # Output perbandingan (BAU saja)
+  "gdp_comparison",
+  "labour_comparison",
+  "income_comparison",
+  "surplus_comparison",
+  "itfl_comparison",
+  "itbl_comparison"
+)
+
+# Simpan semua objek tersebut ke dalam satu file RData
+save(list = bau_vars, file = "data/BAU_projection.RData")
+
+message("Variabel BAU disimpan ke: data/BAU_projection.RData")

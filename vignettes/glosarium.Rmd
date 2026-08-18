@@ -1,0 +1,29 @@
+---
+title: "Glosarium Input-Output dan Ekonomi Regional"
+author: "Tim TARegEco"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_document
+vignette: >
+  %\VignetteIndexEntry{Glosarium}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+# Glosarium
+
+- **Intermediate Consumption (Konsumsi Antara):** Nilai barang dan jasa yang digunakan sebagai input oleh sektor dalam proses produksi.
+- **Final Demand (Permintaan Akhir):** Konsumsi akhir rumah tangga, pemerintah, investasi, dan ekspor.
+- **Added Value (Nilai Tambah):** Balas jasa faktor produksi: upah, surplus usaha, pajak, penyusutan.
+- **Total Output:** Total nilai produksi bruto suatu sektor.
+- **Total Input:** Total biaya produksi yang dikeluarkan sektor (input antara + nilai tambah).
+- **Technical Coefficient (Koefisien Teknis):** Rasio input antara terhadap total input.
+- **Leontief Inverse:** Matriks \\((I - A)^{-1}\\) yang menangkap efek langsung dan tidak langsung.
+- **Backward Linkage:** Keterkaitan ke belakang; sejauh mana sektor mendorong sektor hulu.
+- **Forward Linkage:** Keterkaitan ke depan; sejauh mana sektor mendorong sektor hilir.
+- **Output Multiplier:** Total output yang dihasilkan per unit peningkatan permintaan akhir.
+- **Income Multiplier:** Total pendapatan tenaga kerja per unit permintaan akhir.
+- **Labour Multiplier:** Total tenaga kerja per unit permintaan akhir.
+- **SUB Multiplier:** Total surplus usaha bruto per unit permintaan akhir.
+- **Land Proportion:** Proporsi alokasi lahan per sektor.
+- **Land Requirement:** Luas lahan yang dibutuhkan per sektor.
+- **LPC (Land Productivity Coefficient):** Output per satuan luas lahan (Rp/Ha).

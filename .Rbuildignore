@@ -1,0 +1,11 @@
+^.*\.Rproj$
+^\.Rproj\.user$
+^data$
+^doc$
+^vignettes$
+^README\.md$
+^\.github$
+^dev$
+^\.Rhistory$
+^\.RData$
+^inst/extdata/output$

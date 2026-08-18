@@ -1,0 +1,8 @@
+.Rproj.user
+.Rhistory
+.RData
+*.Rproj
+data/
+vignettes/*.html
+*.Rcheck/
+inst/extdata/output/

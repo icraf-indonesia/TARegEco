@@ -1,0 +1,29 @@
+Package: TARegEco
+Type: Package
+Title: Trade-off Analysis Regional Economy
+Version: 0.1.0
+Authors@R: person("Yumna", "Karimah", email = "y.karimah@landscapealliance.org", role = c("aut", "cre"))
+Description: Tools for descriptive Input-Output analysis and regional economy projection.
+License: MIT + file LICENSE
+Encoding: UTF-8
+LazyData: true
+Depends:
+    R (>= 4.0.0)
+Imports:
+    dplyr,
+    tidyr,
+    tibble,
+    readxl,
+    openxlsx,
+    ggplot2,
+    plotly,
+    DT,
+    stringr,
+    bslib,
+    htmltools,
+    tools
+Suggests:
+    testthat (>= 3.0.0),
+    knitr,
+    rmarkdown
+Config/roxygen2/version: 8.1.0
