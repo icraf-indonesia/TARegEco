@@ -29,7 +29,7 @@ A list with elements: `coefficient`, `total_input`, `surplus`,
   `table`, `top`, `plot`, `compensation`.
 }
 \description{
-SUB multiplier = `colSums(Leontief %*% diag(sub_coeff))`.
+SUB multiplier = `colSums(diag(sub_coeff) %*% Leontief)`.
 Measures total gross operating surplus generated economy-wide per unit
 increase in final demand of a sector.
 }

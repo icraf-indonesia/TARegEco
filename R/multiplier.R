@@ -32,7 +32,7 @@ calc_output_multiplier <- function(Leontief, sector, top_n = 20) {
 
 #' Income multiplier
 #'
-#' Income multiplier = `colSums(Leontief %*% diag(income_coeff))`.
+#' Income multiplier = `colSums(diag(income_coeff) %*% Leontief)`.
 #' Measures total labour income generated economy-wide per unit increase
 #' in final demand of a sector.
 #'
@@ -56,7 +56,8 @@ calc_income_multiplier <- function(Leontief, total_output, added_value, sector, 
   income_value <- as.numeric(added_value["Kompensasi Tenaga Kerja", ])
   total_output <- as.numeric(total_output)
   income_coeff <- ifelse(total_output == 0, 0, income_value / total_output)
-  income_multiplier_matrix <- Leontief %*% diag(income_coeff)
+  
+  income_multiplier_matrix <- diag(income_coeff) %*% Leontief
   income_multiplier <- colSums(income_multiplier_matrix, na.rm = TRUE)
   
   Inc.multiplier <- tibble::tibble(
@@ -84,7 +85,7 @@ calc_income_multiplier <- function(Leontief, total_output, added_value, sector, 
 
 #' Labour multiplier
 #'
-#' Labour multiplier = `colSums(Leontief %*% diag(labour_coeff))`.
+#' Labour multiplier = `colSums(diag(labour_coeff) %*% Leontief)`.
 #' Measures total employment generated economy-wide per unit increase
 #' in final demand of a sector.
 #'
@@ -105,7 +106,8 @@ calc_labour_multiplier <- function(Leontief, labour, total_output, sector, top_n
   labour <- as.numeric(unlist(labour))
   total_output <- as.numeric(total_output)
   labour_coeff <- ifelse(total_output == 0, 0, labour / total_output)
-  labour_multiplier_matrix <- Leontief %*% diag(labour_coeff)
+  
+  labour_multiplier_matrix <- diag(labour_coeff) %*% Leontief
   labour_multiplier <- colSums(labour_multiplier_matrix, na.rm = TRUE)
   
   Lab.multiplier <- tibble::tibble(
@@ -133,7 +135,7 @@ calc_labour_multiplier <- function(Leontief, labour, total_output, sector, top_n
 
 #' Surplus Usaha Bruto (SUB) multiplier
 #'
-#' SUB multiplier = `colSums(Leontief %*% diag(sub_coeff))`.
+#' SUB multiplier = `colSums(diag(sub_coeff) %*% Leontief)`.
 #' Measures total gross operating surplus generated economy-wide per unit
 #' increase in final demand of a sector.
 #'
@@ -158,7 +160,8 @@ calc_sub_multiplier <- function(Leontief, intermediate_consumption_m,
   compensation <- comp$compensation
   
   sub_coeff <- ifelse(total_input == 0, 0, surplus / total_input)
-  sub_multiplier_matrix <- Leontief %*% diag(sub_coeff)
+  
+  sub_multiplier_matrix <- diag(sub_coeff) %*% Leontief
   sub_multiplier <- colSums(sub_multiplier_matrix, na.rm = TRUE)
   
   SUB.multiplier <- tibble::tibble(

@@ -23,7 +23,7 @@ A list with elements: `labour`, `labour_coeff`,
   `multiplier_matrix`, `table`, `top`, `plot`.
 }
 \description{
-Labour multiplier = `colSums(Leontief %*% diag(labour_coeff))`.
+Labour multiplier = `colSums(diag(labour_coeff) %*% Leontief)`.
 Measures total employment generated economy-wide per unit increase
 in final demand of a sector.
 }

@@ -23,7 +23,7 @@ A list with elements: `income`, `income_coeff`,
   `multiplier_matrix`, `table`, `top`, `plot`.
 }
 \description{
-Income multiplier = `colSums(Leontief %*% diag(income_coeff))`.
+Income multiplier = `colSums(diag(income_coeff) %*% Leontief)`.
 Measures total labour income generated economy-wide per unit increase
 in final demand of a sector.
 }
