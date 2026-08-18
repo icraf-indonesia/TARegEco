@@ -6,6 +6,8 @@
 \alias{TARegEco-package}
 \title{TARegEco: Trade-off Analysis Regional Economy}
 \description{
+\if{html}{\figure{logo.png}{options: style='float: right' alt='logo' width='120'}}
+
 Tools for descriptive Input-Output analysis and regional economy projection.
 }
 \seealso{
