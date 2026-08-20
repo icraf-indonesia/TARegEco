@@ -6,7 +6,9 @@
 #' @param path Character. Path to the input file.
 #' @param sheet Character or `NULL`. Sheet name for Excel files. If `NULL`,
 #'   the first sheet is used.
-#' @param header Logical. If `TRUE`, the first row is treated as column names.
+#' @param skip Integer. Number of rows to skip before reading data.
+#' @param header Logical. If `TRUE`, the first row after `skip` is used as
+#'   column names.
 #' @param as_matrix Logical. If `TRUE`, the data is returned as a matrix.
 #'
 #' @return A `tibble` if `as_matrix = FALSE`, or a `matrix` if `TRUE`.
@@ -28,16 +30,16 @@
 #' }
 #'
 #' @export
-read_input_file <- function(path, sheet = NULL, header = FALSE, as_matrix = FALSE) {
+read_input_file <- function(path, sheet = NULL, skip = 0, header = FALSE, as_matrix = FALSE) {
   ext <- tolower(tools::file_ext(path))
   
   if (ext %in% c("xls", "xlsx")) {
     if (!requireNamespace("readxl", quietly = TRUE)) {
       stop("Package 'readxl' is required for Excel files.")
     }
-    data <- readxl::read_excel(path, sheet = sheet, col_names = header)
+    data <- readxl::read_excel(path, sheet = sheet, skip = skip, col_names = header)
   } else if (ext %in% c("csv", "txt")) {
-    data <- utils::read.csv(path, header = header)
+    data <- utils::read.csv(path, skip = skip, header = header)
   } else {
     stop("Unsupported file format. Please upload CSV or Excel.")
   }
