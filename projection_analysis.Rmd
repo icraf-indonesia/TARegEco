@@ -4,8 +4,8 @@ author: "Yumna Karimah"
 date: "`r Sys.Date()`"
 output: html_document
 params:
-  mode: "BAU"         # "BAU" atau "Scenario"
-  n_scenarios: 2      # Jumlah skenario intervensi
+  mode: "Scenario"         # "BAU" atau "Scenario"
+  n_scenarios: 2     # Jumlah skenario intervensi
 ---
 
 ```{r setup, include=FALSE}
@@ -42,8 +42,8 @@ Mode Scenario: Proyeksi dengan `r params$n_scenarios` skenario intervensi + komp
 # =====================================================
 
 ## Mandatory
-descriptive_analysis_table <- "data/IO_Analysis_Output.xlsx"
-projection_area_file <- "data/table/luc_projection.xlsx"
+descriptive_analysis_table <- "inst/extdata/output/IO_Analysis_Output.xlsx"
+projection_area_file_bau <- "inst/extdata/example_data/luc_projection_padagimo_bau.xlsx"
 initial_year <- 2024
 end_year <- 2049
 time_step <- 5
@@ -57,11 +57,12 @@ if (params$mode == "BAU") {
   for (s in 1:n_scenarios) {
     scenario_inputs[[s]] <- list(
       name = paste0("Skenario_", s),
-      land_distribution = paste0("data/scenario/scenario", s, "/distribusi_lahan.xlsx"),
-      growth_rate       = paste0("data/scenario/scenario", s, "/growth_rate.xlsx"),
-      lpc               = paste0("data/scenario/scenario", s, "/produktivitas_lpc.xlsx"),
-      io_changes        = paste0("data/scenario/scenario", s, "/perubahan_io.xlsx"),
-      intensity         = paste0("data/scenario/scenario", s, "/intensitas.xlsx")
+      luc_projection    = paste0("inst/extdata/scenario/scenario", s, "/luc_projection.xlsx"),
+      land_distribution = paste0("inst/extdata/scenario/scenario", s, "/distribusi_lahan.xlsx"),
+      growth_rate       = paste0("inst/extdata/scenario/scenario", s, "/growth_rate.xlsx"),
+      lpc               = paste0("inst/extdata/scenario/scenario", s, "/produktivitas_lpc.xlsx"),
+      io_changes        = paste0("inst/extdata/scenario/scenario", s, "/perubahan_io.xlsx"),
+      intensity         = paste0("inst/extdata/scenario/scenario", s, "/intensitas.xlsx")
     )
   }
 }
@@ -120,7 +121,7 @@ output_multiplier   <- read_sheet(descriptive_analysis_table, "Multiplier_Output
 linkage_table       <- read_sheet(descriptive_analysis_table, "Linkage")
 
 land_prop <- readxl::read_excel(descriptive_analysis_table, sheet = "Land_Proportion")
-projection_area <- readxl::read_excel(projection_area_file) |> as.data.frame()
+projection_area <- readxl::read_excel(projection_area_file_bau) |> as.data.frame()
 
 # Growth rate default
 growth_rate <- tryCatch(
@@ -140,24 +141,36 @@ storage.mode(P_default) <- "numeric"
 
 calculate_lpc_growth_rate <- function(lpc_scenario, sector, period_idx, periods_df) {
   if (is.null(lpc_scenario)) return(0)
-  
+
   sub <- lpc_scenario[
     lpc_scenario$Sector_Code == sector &
     lpc_scenario$Start_Year <= periods_df$End_Year[period_idx],
   ]
-  
+
   if (nrow(sub) == 0) return(0)
-  
+
+  # Urutkan agar periode berurutan
+  sub <- sub[order(sub$Start_Year), ]
+
   crop_type <- sub$Crop_Type[1]
-  
+
   if (crop_type == "annual") {
     row_now <- sub[sub$Start_Year == periods_df$Start_Year[period_idx], ]
     if (nrow(row_now) == 0) return(0)
     return(row_now$Increment_Rate * row_now$Area_Implemented)
-  } else {
+
+  } else if (crop_type == "perennial") {
+    # Area implemented periode sekarang
     area_now <- sub$Area_Implemented[nrow(sub)]
-    total <- sum(sub$Increment_Rate * area_now)
-    return(total)
+
+    # Total increment rate dari periode 1 s/d sekarang
+    total_increment <- sum(sub$Increment_Rate)
+
+    # LPC Growth Rate = area_now * total_increment
+    return(area_now * total_increment)
+
+  } else {
+    stop("Crop_Type tidak dikenal: ", crop_type)
   }
 }
 
@@ -301,14 +314,19 @@ run_projection <- function(
     land_req_t[land_req_t <= 0] <- NA
     
     # LPC Productivity
+    # Vektor LPC Growth Rate per sektor untuk tahun berjalan
+    lpc_gr_vec <- rep(0, length(current_lpc))
+    
     if (!is.null(lpc_scenario)) {
       for (s in seq_along(current_lpc)) {
         sector_code <- gdp_baseline$Sector_Code[s]
         lpc_gr <- calculate_lpc_growth_rate(lpc_scenario, sector_code, yr_idx, periods_df)
+        lpc_gr_vec[s] <- lpc_gr
         current_lpc[s] <- current_lpc[s] + (current_lpc[s] * lpc_gr)
       }
     }
     current_lpc[!is.finite(current_lpc)] <- 0
+    lpc_gr_vec[!is.finite(lpc_gr_vec)] <- 0
     
     # Final Demand
     fd_t <- land_req_t * current_prop_fd * current_lpc * growth_factor
@@ -376,7 +394,9 @@ run_projection <- function(
       SECTOR = gdp_baseline$SECTOR,
       CATEGORY = gdp_baseline$CATEGORY,
       LAND_REQUIREMENT = land_req_t,
+      LPC_GROWTH_RATE  = lpc_gr_vec,  
       LPC = lpc_t,
+      LPC_NEW = lpc_t + (lpc_t*lpc_gr_vec),
       FD = fd_t,
       FD_EFFECTIVE = fd_effective,
       INTENSITY = intensity_vec,
@@ -411,13 +431,13 @@ run_projection <- function(
 # 6. SIAPKAN AREA MATRIX
 # =====================================================
 
-projection_long <- projection_area |>
-  tidyr::pivot_longer(
-    cols = -c(ID, LC),
-    names_to = "YEAR",
-    values_to = "AREA"
-  ) |>
-  dplyr::mutate(YEAR = as.numeric(YEAR))
+# projection_long <- projection_area |>
+#   tidyr::pivot_longer(
+#     cols = -c(ID, LC),
+#     names_to = "YEAR",
+#     values_to = "AREA"
+#   ) |>
+#   dplyr::mutate(YEAR = as.numeric(YEAR))
 
 create_area_matrix <- function(projection_long) {
   years <- sort(unique(projection_long$YEAR))
@@ -436,8 +456,6 @@ create_area_matrix <- function(projection_long) {
   }
   area_matrix
 }
-
-area_matrix <- create_area_matrix(projection_long)
 ```
 
 ```{r, echo=FALSE, message=FALSE, warning=FALSE}
@@ -468,7 +486,7 @@ load_scenario_inputs <- function(sc_input, P_default, growth_rate) {
   if (!is.null(sc_input$lpc) && file.exists(sc_input$lpc)) {
     lpc_sc <- readxl::read_excel(sc_input$lpc) |> as.data.frame()
     lpc_sc$Increment_Rate <- as.numeric(lpc_sc$Increment_Rate)
-    lpc_sc$Area_Implemented <- as.numeric(lpc_sc$Area_Implemented) / 100
+    lpc_sc$Area_Implemented <- as.numeric(lpc_sc$Area_Implemented)
   } else {
     lpc_sc <- NULL
   }
@@ -490,6 +508,7 @@ load_scenario_inputs <- function(sc_input, P_default, growth_rate) {
   }
   
   return(list(
+    luc_projection = sc_input$luc_projection,
     P = P_sc,
     growth_rate = growth_rate_sc,
     lpc_scenario = lpc_sc,
@@ -502,6 +521,14 @@ load_scenario_inputs <- function(sc_input, P_default, growth_rate) {
 # RUN BAU
 # ==========================================
 message("Menjalankan proyeksi BAU...")
+
+projection_area_bau <- readxl::read_excel(projection_area_file_bau) |> as.data.frame()
+projection_long_bau <- projection_area_bau |>
+  tidyr::pivot_longer(cols = -c(ID, LC), names_to = "YEAR", values_to = "AREA") |>
+  dplyr::mutate(YEAR = as.numeric(YEAR))
+
+area_matrix_bau <- create_area_matrix(projection_long_bau)
+
 projection_bau <- run_projection(
   gdp_baseline        = gdp_baseline,
   income_multiplier   = income_multiplier,
@@ -513,7 +540,7 @@ projection_bau <- run_projection(
   full_io_table       = full_io_table,
   sector_idx          = sector_idx,
   P                   = P_default,
-  area_matrix         = area_matrix,
+  area_matrix         = area_matrix_bau,
   growth_rate         = growth_rate,
   lpc_scenario        = NULL,
   io_changes          = NULL,
@@ -523,14 +550,27 @@ projection_bau$SCENARIO <- "BAU"
 
 all_projections <- list(BAU = projection_bau)
 
+save(
+  list = c("projection_bau", "area_matrix_bau", "gdp_baseline", "leontief_matrix", "full_io_table", "sector_idx", "income_multiplier", "labour_multiplier", "SUB_multiplier", "output_multiplier", "linkage_table", "P_default", "growth_rate"),
+  file = "inst/extdata/output/BAU_projection.RData"
+)
+
 # ==========================================
 # RUN SCENARIOS (JIKA MODE SCENARIO)
 # ==========================================
+
 if (params$mode == "Scenario" && !is.null(scenario_inputs)) {
   for (s in seq_along(scenario_inputs)) {
     message("Menjalankan proyeksi Skenario ", s, "/", n_scenarios, "...")
     
     sc_input <- load_scenario_inputs(scenario_inputs[[s]], P_default, growth_rate)
+    
+    projection_area_sc <- readxl::read_excel(sc_input$luc_projection) |> as.data.frame()
+    projection_long_sc <- projection_area_sc |>
+      tidyr::pivot_longer(cols = -c(ID, LC), names_to = "YEAR", values_to = "AREA") |>
+      dplyr::mutate(YEAR = as.numeric(YEAR))
+    
+    area_matrix_sc <- create_area_matrix(projection_long_sc)
     
     projection_sc <- run_projection(
       gdp_baseline        = gdp_baseline,
@@ -543,7 +583,7 @@ if (params$mode == "Scenario" && !is.null(scenario_inputs)) {
       full_io_table       = full_io_table,
       sector_idx          = sector_idx,
       P                   = sc_input$P,
-      area_matrix         = area_matrix,
+      area_matrix         = area_matrix_sc,
       growth_rate         = sc_input$growth_rate,
       lpc_scenario        = sc_input$lpc_scenario,
       io_changes          = sc_input$io_changes,
@@ -629,13 +669,14 @@ gdp_comparison <- projection_combined |>
   dplyr::group_by(YEAR, SCENARIO) |>
   dplyr::summarise(GDP = sum(GDP), .groups = "drop")
 
-gdp_base <- data.frame(
+scenarios <- sort(unique(projection_combined$SCENARIO))
+gdp_base <- tibble::tibble(
   YEAR = initial_year,
-  SCENARIO = unique(gdp_comparison$SCENARIO),
-  GDP = sum(gdp_baseline$GDP)
+  SCENARIO = scenarios,
+  GDP = rep(sum(gdp_baseline$GDP), length(scenarios))
 )
 
-gdp_comparison <- rbind(gdp_base, gdp_comparison) |>
+gdp_comparison <- dplyr::bind_rows(gdp_base, gdp_comparison) %>%
   dplyr::arrange(SCENARIO, YEAR)
 
 gdp_wide <- create_comparison_table(gdp_comparison, "GDP")
@@ -1258,7 +1299,7 @@ create_scenario_templates(
   initial_year  = initial_year,
   end_year      = end_year,
   time_step     = time_step,
-  output_path   = "data/Scenario_Input_Templates.xlsx"
+  output_path   = "inst/extdata/template/Scenario_Input_Templates.xlsx"
 )
 
 # ==========================================
@@ -1320,7 +1361,7 @@ for (s in 1:n_scenarios) {
   # Pilih tema (cycling jika n_scenarios > jumlah tema)
   tema <- scenario_themes[[(s - 1) %% length(scenario_themes) + 1]]
   
-  sc_folder <- paste0("data/scenario/scenario", s)
+  sc_folder <- paste0("inst/extdata/scenario/scenario", s)
   dir.create(sc_folder, showWarnings = FALSE, recursive = TRUE)
   
   message("  Membuat template Skenario ", s, ": ", tema$nama, "...")
@@ -1514,7 +1555,7 @@ for (s in 1:n_scenarios) {
 }
 
 message("   Template untuk ", n_scenarios, " skenario berhasil dibuat")
-message("   Folder: data/scenario/scenario1, scenario2, ...")
+message("   Folder: inst/extdata/scenario/scenario1, scenario2, ...")
 message("   Template utama: Scenario_Input_Templates.xlsx")
 ```
 
@@ -1560,6 +1601,6 @@ bau_vars <- c(
 )
 
 # Simpan semua objek tersebut ke dalam satu file RData
-save(list = bau_vars, file = "data/BAU_projection.RData")
+save(list = bau_vars, file = "inst/extdata/output/BAU_projection.RData")
 
-message("Variabel BAU disimpan ke: data/BAU_projection.RData")
+message("Variabel BAU disimpan ke: inst/extdata/output/BAU_projection.RData")
