@@ -47,9 +47,9 @@ Dokumen ini adalah notebook R Markdown berjudul "Trade-off Analysis (TA) Ekonomi
 ```{r input-setup, echo=FALSE, message=FALSE, warning=FALSE}
 
 # Define input paths
-io_file_path <- "D:/OneDrive - CIFOR-ICRAF/ICRAF/LUMENS/1_Modules/Trade-off Analysis/2026/TARegEco_Descriptive_Analysis/analysis/jateng/TARegEco_Descriptive_Analysis/v1/Input_IO_template_BUKECAP.xlsx" 
-landuse_table_file_path <- "D:/OneDrive - CIFOR-ICRAF/ICRAF/LUMENS/1_Modules/Trade-off Analysis/2026/TARegEco_Descriptive_Analysis/analysis/jateng/TARegEco_Descriptive_Analysis/v1/Input_penutup_lahan_template_BUKECAP.xlsx"
-output_dir <- "D:/OneDrive - CIFOR-ICRAF/ICRAF/LUMENS/1_Modules/Trade-off Analysis/2026/TARegEco_Descriptive_Analysis/analysis/jateng/TARegEco_Descriptive_Analysis/v1"
+io_file_path <- "inst/extdata/example_data/Input_IO_template_BUKECAP.xlsx" 
+landuse_table_file_path <- "inst/extdata/example_data/Input_penutup_lahan_template_BUKECAP.xlsx"
+output_dir <- "inst/extdata/output/"
 
 # Read inputs
 sektor_ekonomi <- read_input_file(
