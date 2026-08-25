@@ -1,3 +1,41 @@
+#' Save preprocessing data to RDS
+#'
+#' Saves the input and validation results into an RDS file so that the
+#' preprocessing stage can be reloaded before running the core analysis.
+#'
+#' @param io_preprocessing List containing preprocessed input data.
+#' @param output_dir Character. Directory to save the RDS file.
+#'   Default is `"inst/extdata/output"`.
+#'
+#' @return Invisibly returns the output directory.
+#' @export
+save_preprocessing_data <- function(io_preprocessing,
+                                    output_dir = "inst/extdata/output") {
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+  saveRDS(io_preprocessing,
+          file = file.path(output_dir, "descriptive_input_preprocessing.rds"))
+  invisible(output_dir)
+}
+
+#' Save core analysis results to RDS
+#'
+#' Saves the results of the core Input-Output analysis into an RDS file so
+#' that visualisation can be performed without recalculating.
+#'
+#' @param core_analysis_results List containing core analysis outputs.
+#' @param output_dir Character. Directory to save the RDS file.
+#'   Default is `"inst/extdata/output"`.
+#'
+#' @return Invisibly returns the output directory.
+#' @export
+save_core_analysis_data <- function(core_analysis_results,
+                                    output_dir = "inst/extdata/output") {
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+  saveRDS(core_analysis_results,
+          file = file.path(output_dir, "descriptive_core_analysis.rds"))
+  invisible(output_dir)
+}
+
 #' Export descriptive analysis outputs to Excel
 #'
 #' Writes all main results of the descriptive Input-Output analysis into a
@@ -53,6 +91,7 @@
 export_io_analysis <- function(gdp_baseline,
                                linkage_result,
                                growth_rate,
+                               labour,
                                OM, IM, LM, SUBM,
                                land_proportion,
                                linkage_table,
@@ -140,11 +179,11 @@ export_io_analysis <- function(gdp_baseline,
   invisible(output_path)
 }
 
-#' Save descriptive analysis results to RData / RDS
+#' Save final descriptive analysis data to RDS or RData
 #'
-#' Saves the main objects of the descriptive Input-Output analysis into a
-#' single `.rds` file (or optionally `.RData`) for use by other modules
-#' such as the projection module.
+#' Saves a single combined object containing all inputs and results of the
+#' descriptive Input-Output analysis. This file is intended to be loaded by
+#' the projection module or other downstream modules.
 #'
 #' @param sector Tibble of sectors.
 #' @param intermediate_consumption_m Numeric matrix of intermediate consumption.
@@ -162,29 +201,31 @@ export_io_analysis <- function(gdp_baseline,
 #' @param SUBM Output from [calc_sub_multiplier()].
 #' @param full_io_table Numeric matrix from [build_full_io_table()].
 #' @param code_registry Tibble from [build_full_io_table()].
-#' @param output_path Character. Path to the output file.
-#'   Default is `"data/io_descriptive.rds"`.
+#' @param output_dir Character. Directory to save the RDS file.
+#'   Default is `"inst/extdata/output"`.
+#' @param combined_file Character. Filename for the combined object.
+#'   Default is `"descriptive_analysis_module.rds"`.
 #' @param format Character. Either `"rds"` (default) or `"rdata"`.
 #'
-#' @return Invisibly returns the full path to the saved file.
+#' @return Invisibly returns the output directory.
 #'
 #' @examples
 #' \dontrun{
 #' save_analysis_data(
-#'   sector = sector,
+#'   sector                   = sector,
 #'   intermediate_consumption_m = intermediate_consumption.m,
-#'   final_demand_m = final_demand.m,
-#'   added_value_m = added_value.m,
-#'   labour = labour,
-#'   land_proportion = land_proportion,
-#'   growth_rate = growth_rate,
-#'   landuse_table = landuse_table,
-#'   gdp_baseline = gdp_baseline,
-#'   linkage_result = linkage_result,
+#'   final_demand_m           = final_demand.m,
+#'   added_value_m            = added_value.m,
+#'   labour                   = labour,
+#'   land_proportion          = land_proportion,
+#'   growth_rate              = growth_rate,
+#'   landuse_table            = landuse_table,
+#'   gdp_baseline             = gdp_baseline,
+#'   linkage_result           = linkage_result,
 #'   OM = OM, IM = IM, LM = LM, SUBM = SUBM,
-#'   full_io_table = full_io_table,
-#'   code_registry = code_registry,
-#'   output_path = "data/io_descriptive.rds"
+#'   full_io_table            = full_io_table,
+#'   code_registry            = code_registry,
+#'   output_dir               = "inst/extdata/output"
 #' )
 #' }
 #'
@@ -202,39 +243,52 @@ save_analysis_data <- function(sector,
                                OM, IM, LM, SUBM,
                                full_io_table,
                                code_registry,
-                               output_path = "data/io_descriptive.rds",
+                               output_dir = "inst/extdata/output",
+                               combined_file = "descriptive_analysis_module.rds",
                                format = c("rds", "rdata")) {
   
   format <- match.arg(format)
   
+  # -----------------------------------------------
+  # Full combined list
+  # -----------------------------------------------
   io <- list(
-    sector                  = sector,
-    intermediate_consumption= intermediate_consumption_m,
-    final_demand            = final_demand_m,
-    added_value             = added_value_m,
-    labour                  = labour,
-    land_proportion         = land_proportion,
-    growth_rate             = growth_rate,
-    landuse_table           = landuse_table,
-    gdp_baseline            = gdp_baseline,
-    linkage                 = linkage_result,
+    sector                   = sector,
+    intermediate_consumption = intermediate_consumption_m,
+    final_demand             = final_demand_m,
+    final_demand_component   = if (exists("final_demand_component")) final_demand_component else NULL,
+    added_value              = added_value_m,
+    added_value_lookup       = if (exists("added_value_lookup")) added_value_lookup else NULL,
+    labour                   = labour,
+    land_proportion          = land_proportion,
+    P_default                = if (exists("P_default")) P_default else NULL,
+    landuse_table            = landuse_table,
+    growth_rate              = growth_rate,
+    gdp_baseline             = gdp_baseline,
+    linkage                  = linkage_result,
     multipliers = list(
-      output  = OM$table,
-      income  = IM$table,
-      labour  = LM$table,
-      sub     = SUBM$table
+      output = OM$table,
+      income = IM$table,
+      labour = LM$table,
+      sub    = SUBM$table
     ),
-    full_io_table           = full_io_table,
-    code_registry           = code_registry
+    full_io_table            = full_io_table,
+    code_registry            = code_registry
   )
   
-  dir.create(dirname(output_path), showWarnings = FALSE, recursive = TRUE)
+  # -----------------------------------------------
+  # Create output directory
+  # -----------------------------------------------
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
   
+  # -----------------------------------------------
+  # Save combined object
+  # -----------------------------------------------
   if (format == "rds") {
-    saveRDS(io, file = output_path)
+    saveRDS(io, file = file.path(output_dir, combined_file))
   } else {
-    save(io, file = output_path)
+    save(io, file = file.path(output_dir, sub("\\.rds$", ".RData", combined_file)))
   }
   
-  invisible(output_path)
+  invisible(output_dir)
 }

@@ -2,7 +2,7 @@
 % Please edit documentation in R/export.R
 \name{save_analysis_data}
 \alias{save_analysis_data}
-\title{Save descriptive analysis results to RData / RDS}
+\title{Save final descriptive analysis data to RDS or RData}
 \usage{
 save_analysis_data(
   sector,
@@ -21,7 +21,8 @@ save_analysis_data(
   SUBM,
   full_io_table,
   code_registry,
-  output_path = "data/io_descriptive.rds",
+  output_dir = "inst/extdata/output",
+  combined_file = "descriptive_analysis_module.rds",
   format = c("rds", "rdata")
 )
 }
@@ -58,36 +59,39 @@ save_analysis_data(
 
 \item{code_registry}{Tibble from [build_full_io_table()].}
 
-\item{output_path}{Character. Path to the output file.
-Default is `"data/io_descriptive.rds"`.}
+\item{output_dir}{Character. Directory to save the RDS file.
+Default is `"inst/extdata/output"`.}
+
+\item{combined_file}{Character. Filename for the combined object.
+Default is `"descriptive_analysis_module.rds"`.}
 
 \item{format}{Character. Either `"rds"` (default) or `"rdata"`.}
 }
 \value{
-Invisibly returns the full path to the saved file.
+Invisibly returns the output directory.
 }
 \description{
-Saves the main objects of the descriptive Input-Output analysis into a
-single `.rds` file (or optionally `.RData`) for use by other modules
-such as the projection module.
+Saves a single combined object containing all inputs and results of the
+descriptive Input-Output analysis. This file is intended to be loaded by
+the projection module or other downstream modules.
 }
 \examples{
 \dontrun{
 save_analysis_data(
-  sector = sector,
+  sector                   = sector,
   intermediate_consumption_m = intermediate_consumption.m,
-  final_demand_m = final_demand.m,
-  added_value_m = added_value.m,
-  labour = labour,
-  land_proportion = land_proportion,
-  growth_rate = growth_rate,
-  landuse_table = landuse_table,
-  gdp_baseline = gdp_baseline,
-  linkage_result = linkage_result,
+  final_demand_m           = final_demand.m,
+  added_value_m            = added_value.m,
+  labour                   = labour,
+  land_proportion          = land_proportion,
+  growth_rate              = growth_rate,
+  landuse_table            = landuse_table,
+  gdp_baseline             = gdp_baseline,
+  linkage_result           = linkage_result,
   OM = OM, IM = IM, LM = LM, SUBM = SUBM,
-  full_io_table = full_io_table,
-  code_registry = code_registry,
-  output_path = "data/io_descriptive.rds"
+  full_io_table            = full_io_table,
+  code_registry            = code_registry,
+  output_dir               = "inst/extdata/output"
 )
 }
 

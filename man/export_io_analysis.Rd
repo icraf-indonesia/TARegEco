@@ -8,6 +8,7 @@ export_io_analysis(
   gdp_baseline,
   linkage_result,
   growth_rate,
+  labour,
   OM,
   IM,
   LM,

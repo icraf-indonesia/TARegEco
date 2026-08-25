@@ -27,6 +27,7 @@ library(dplyr)
 library(tidyr)     
 library(stringr)  
 
+# Load all functions from R/
 source_files <- list.files("R", pattern = "\\.R$", full.names = TRUE)
 invisible(lapply(source_files, source))
 ```
@@ -48,6 +49,10 @@ io_file <- "inst/extdata/example_data/Bukecap/Input_IO_Bukecap_2025.xlsx"
 growth_rate_file <- "inst/extdata/example_data/Bukecap/laju_pertumbuhan_bukecap.xlsx"
 landuse_table_file <- "inst/extdata/example_data/Bukecap/landcover_lookuptable_bukecap.xlsx"
 
+# =====================================================
+# PREPROCESSING & VALIDATION
+# =====================================================
+
 sector <- read_input_file(io_file, sheet = "sector", header = TRUE)
 colnames(sector)[1:3] <- c("Nama_Sektor", "Kategori", "Berbasis_Lahan")
 intermediate_consumption.m <- read_input_file(io_file, sheet = "intermediate_consumption", as_matrix = TRUE)
@@ -66,13 +71,156 @@ landuse_table <- read_input_file(landuse_table_file, header = TRUE)
 growth_rate <- read_input_file(growth_rate_file, header = TRUE)
 
 validate_io_data(sector, intermediate_consumption.m, final_demand.m, added_value.m, labour, land_proportion)
+
+# Build Full IO Table & Code Registry
+full_io_result <- build_full_io_table(
+  sector = sector,
+  intermediate_consumption_m = intermediate_consumption.m,
+  final_demand_m = final_demand.m,
+  final_demand_component = final_demand_component,
+  added_value_m = added_value.m,
+  added_value_lookup = added_value_lookup
+)
+full_io_table <- full_io_result$full_io_table
+code_registry <- full_io_result$code_registry
+
+sector_idx <- which(code_registry$Type == "Sector")
+n_sector <- nrow(sector)
+P_default <- land_proportion
+
+# Save preprocessing results to RDS
+input_preprocessing <- list(
+  sector                   = sector,
+  intermediate_consumption = intermediate_consumption.m,
+  final_demand             = final_demand.m,
+  final_demand_component   = final_demand_component,
+  added_value              = added_value.m,
+  added_value_lookup       = added_value_lookup,
+  labour                   = labour,
+  land_proportion          = land_proportion,
+  P_default                = P_default,
+  landuse_table            = landuse_table,
+  growth_rate              = growth_rate,
+  full_io_table            = full_io_table,
+  code_registry            = code_registry,
+  sector_idx               = sector_idx,
+  n_sector                 = n_sector
+)
+
+# Save preprocessing results
+save_preprocessing_data(input_preprocessing)
+
+# Reload from RDS to ensure objects are sourced from the saved file
+input_preprocessing <- readRDS("inst/extdata/output/descriptive_input_preprocessing.rds")
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# =====================================================
+# CORE ANALYSIS
+# =====================================================
+
+sector                     <- input_preprocessing$sector
+intermediate_consumption.m <- input_preprocessing$intermediate_consumption
+final_demand.m             <- input_preprocessing$final_demand
+added_value.m              <- input_preprocessing$added_value
+labour                     <- input_preprocessing$labour
+land_proportion            <- input_preprocessing$land_proportion
+landuse_table              <- input_preprocessing$landuse_table
+growth_rate                <- input_preprocessing$growth_rate
+full_io_table              <- input_preprocessing$full_io_table
+code_registry              <- input_preprocessing$code_registry
+sector_idx                 <- input_preprocessing$sector_idx
+
+# Balance check
+balance_result <- check_io_balance(
+  intermediate_consumption.m,
+  final_demand.m,
+  added_value.m,
+  sector_names = sector$Nama_Sektor,
+  tolerance_percent = 1
+)
+
+# Leontief & Linkage
+leontief_result <- compute_leontief(intermediate_consumption.m, added_value.m)
+linkage_result  <- compute_linkage(intermediate_consumption.m, added_value.m)
+linkages_table  <- create_linkages_table(sector, linkage_result)
+linkages_table  <- classify_quadrant(linkages_table)
+
+# GDP
+gdp_baseline <- calculate_gdp(
+  added_value.m,
+  intermediate_consumption.m,
+  final_demand.m,
+  sector,
+  land_proportion,
+  landuse_table,
+  leontief_result$Leontief
+)
+
+# Multiplier
+OM   <- calc_output_multiplier(leontief_result$Leontief, sector)
+IM   <- calc_income_multiplier(leontief_result$Leontief,
+                               gdp_baseline$Total_OUTPUT,
+                               added_value.m, sector)
+LM   <- calc_labour_multiplier(leontief_result$Leontief,
+                               labour,
+                               gdp_baseline$Total_OUTPUT, sector)
+SUBM <- calc_sub_multiplier(leontief_result$Leontief,
+                            intermediate_consumption.m,
+                            added_value.m, sector)
+multiplier_table <- combine_multipliers(OM, IM, LM, SUBM)
+
+# Save core analysis results to RDS
+core_analysis_results <- list(
+  sector                   = sector,
+  intermediate_consumption = intermediate_consumption.m,
+  final_demand             = final_demand.m,
+  added_value              = added_value.m,
+  added_value_components   = get_added_value_components(intermediate_consumption.m, added_value.m),
+  io_balance               = balance_result,
+  leontief_result          = leontief_result,
+  A                        = leontief_result$A,
+  Leontief                 = leontief_result$Leontief,
+  linkage_result           = linkage_result,
+  linkages_table           = linkages_table,
+  gdp_baseline             = gdp_baseline,
+  output_multiplier        = OM,
+  income_multiplier        = IM,
+  labour_multiplier        = LM,
+  sub_multiplier           = SUBM,
+  multiplier_table         = multiplier_table,
+  full_io_table            = full_io_table,
+  code_registry            = code_registry
+)
+
+# Save core analysis results
+save_core_analysis_data(core_analysis_results)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# =====================================================
+# LOAD CORE ANALYSIS RESULTS FOR VISUALIZATION
+# =====================================================
+core_analysis_results <- readRDS("inst/extdata/output/descriptive_core_analysis.rds")
+
+sector              <- core_analysis_results$sector
+intermediate_consumption.m <- core_analysis_results$intermediate_consumption
+final_demand.m      <- core_analysis_results$final_demand
+added_value.m       <- core_analysis_results$added_value
+balance_result      <- core_analysis_results$io_balance
+linkage_result      <- core_analysis_results$linkage_result
+linkages_table      <- core_analysis_results$linkages_table
+gdp_baseline        <- core_analysis_results$gdp_baseline
+OM                  <- core_analysis_results$output_multiplier
+IM                  <- core_analysis_results$income_multiplier
+LM                  <- core_analysis_results$labour_multiplier
+SUBM                <- core_analysis_results$sub_multiplier
+multiplier_table    <- core_analysis_results$multiplier_table
+full_io_table       <- core_analysis_results$full_io_table
+code_registry       <- core_analysis_results$code_registry
 ```
 
 # 1. Analisis Deskriptif
-
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
-balance_result <- check_io_balance(intermediate_consumption.m, final_demand.m, added_value.m, sector_names = sector$Nama_Sektor, tolerance_percent = 1)
-```
 
 Tabel Input-Output yang digunakan memiliki status keseimbangan **`r balance_result$status`**. Total input pada tabel tercatat sebesar `r format(round(balance_result$total_input, 0), big.mark = ",")`, sedangkan total output sebesar `r format(round(balance_result$total_output, 0), big.mark = ",")`. Selisih antara keduanya adalah `r format(round(balance_result$gap, 4), big.mark = ",")`, atau setara `r round(balance_result$gap_percent, 4)`% dari total transaksi, dibandingkan terhadap ambang batas toleransi sebesar `r balance_result$tolerance_percent`%. Selisih pada tabel IO umumnya disebabkan oleh pembulatan angka, presisi komputasi, atau proses agregasi data, dan tabel dengan status SEIMBANG dapat langsung dipakai sebagai dasar analisis ekonomi berikutnya.
 
@@ -87,28 +235,20 @@ DT::datatable(balance_result$balance_detail, rownames = FALSE,
 ```
 
 # 2. Tabel Linkage
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
-linkage_result <- compute_linkage(intermediate_consumption.m, added_value.m)
-linkages_table <- create_linkages_table(sector, linkage_result)
-
-top_itbl <- linkages_table[which.max(linkages_table$ITBL), ]
-top_itfl <- linkages_table[which.max(linkages_table$ITFL), ]
-
-primary_sector <- subset(linkages_table, ITBL >= 1 & ITFL >= 1)
-primary_sector_names <- paste(primary_sector$SECTOR, collapse = ", ")
-```
 
 Tabel linkage menunjukkan tingkat keterkaitan antar sektor ekonomi baik secara langsung maupun total setelah mempertimbangkan efek pengganda dalam sistem Input-Output.
 
-Sektor dengan nilai Indeks Total Backward Linkage (ITBL) tertinggi adalah **`r top_itbl$SECTOR`** dengan nilai `r round(top_itbl$ITBL, 3)`. Nilai ini menunjukkan bahwa peningkatan permintaan pada sektor tersebut akan menghasilkan kebutuhan input dari sektor lain yang relatif lebih besar.
+Sektor dengan nilai Indeks Total Backward Linkage (ITBL) tertinggi adalah `r linkages_table$SECTOR[which.max(linkages_table$ITBL)]` dengan nilai `r round(max(linkages_table$ITBL), 3)`. Nilai ini menunjukkan bahwa peningkatan permintaan pada sektor tersebut akan menghasilkan kebutuhan input dari sektor lain yang relatif lebih besar.
 
-Sektor dengan nilai Indeks Total Forward Linkage (ITFL) tertinggi adalah **`r top_itfl$SECTOR`** dengan nilai `r round(top_itfl$ITFL, 3)`. Hal ini menunjukkan bahwa output sektor tersebut banyak digunakan sebagai input oleh sektor-sektor lainnya.
+Sektor dengan nilai Indeks Total Forward Linkage (ITFL) tertinggi adalah `r linkages_table$SECTOR[which.max(linkages_table$ITFL)]` dengan nilai `r round(max(linkages_table$ITFL), 3)`. Hal ini menunjukkan bahwa output sektor tersebut banyak digunakan sebagai input oleh sektor-sektor lainnya.
 
-Sebanyak `r nrow(primary_sector)` sektor memiliki nilai ITBL dan ITFL lebih besar atau sama dengan 1, yang mengindikasikan sektor-sektor tersebut berperan penting dalam mendorong aktivitas ekonomi baik dari sisi permintaan input maupun penyediaan output.
+Sebanyak `r nrow(subset(linkages_table, ITBL >= 1 & ITFL >= 1))` sektor memiliki nilai ITBL dan ITFL lebih besar atau sama dengan 1, yang mengindikasikan sektor-sektor tersebut berperan penting dalam mendorong aktivitas ekonomi baik dari sisi permintaan input maupun penyediaan output.
+
 
 ```{r, echo=FALSE, message=FALSE, warning=FALSE}
 DT::datatable(linkages_table, rownames = FALSE) %>%
-  DT::formatRound(columns = c("DFL","TFL","ITFL","DBL","TBL","ITBL","|TFL-DFL|","|TBL-DBL|"),
+  DT::formatRound(columns = c("DFL","TFL","ITFL","DBL","TBL","ITBL",
+                              "|TFL-DFL|","|TBL-DBL|"),
                   digits = 3, mark = ",")
 ```
 
@@ -117,236 +257,97 @@ DT::datatable(linkages_table, rownames = FALSE) %>%
 ```{r, echo=FALSE, message=FALSE, warning=FALSE}
 primary_sector_table <- select_primary_sectors(linkages_table)
 
-DT::datatable(
-  primary_sector_table %>%
-    dplyr::select(-ID),
-  rownames = FALSE,
-  options = list(
-    pageLength = 10,
-    scrollX = TRUE
-  )
-) %>%
-  DT::formatSignif(
-    columns = c(
-      "DFL",
-      "TFL",
-      "ITFL",
-      "DBL",
-      "TBL",
-      "ITBL",
-      "|TFL-DFL|",
-      "|TBL-DBL|"
-    ),
-    digits = 3
-  )
-
+DT::datatable(primary_sector_table %>% dplyr::select(-ID),
+              rownames = FALSE,
+              options = list(pageLength = 10, scrollX = TRUE)) %>%
+  DT::formatSignif(columns = c("DFL","TFL","ITFL","DBL","TBL","ITBL",
+                               "|TFL-DFL|","|TBL-DBL|"),
+                   digits = 3)
 ```
 
-Sebanyak `r nrow(primary_sector_table)` sektor unggulan teridentifikasi memiliki nilai DBL dan DFL lebih besar atau sama dengan 1. Sektor-sektor tersebut memiliki keterkaitan ke belakang dan ke depan yang kuat, sehingga berperan penting dalam mendorong aktivitas ekonomi baik pada sektor hulu maupun hilir. Sektor unggulan yang teridentifikasi meliputi: `r primary_sector_names`.
+Sebanyak `r nrow(primary_sector_table)` sektor unggulan teridentifikasi memiliki nilai DBL dan DFL lebih besar atau sama dengan 1. Sektor-sektor tersebut memiliki keterkaitan ke belakang dan ke depan yang kuat, sehingga berperan penting dalam mendorong aktivitas ekonomi baik pada sektor hulu maupun hilir. Sektor unggulan yang teridentifikasi meliputi: `r paste(primary_sector_table$SECTOR, collapse = ", ")`.
 
 # 4. Analisis Backward dan Forward Linkage
 
 ```{r, echo=FALSE, message=FALSE, warning=FALSE}
 prs_plot <- generate_prs_plot(linkages_table)
 ggplotly(prs_plot)
-
-linkages_table <- classify_quadrant(linkages_table)
-
-quad1 <- subset(linkages_table, Quadrant == "Quadrant I")
-quad2 <- subset(linkages_table, Quadrant == "Quadrant II")
-quad3 <- subset(linkages_table, Quadrant == "Quadrant III")
-quad4 <- subset(linkages_table, Quadrant == "Quadrant IV")
 ```
 
 Grafik topologi sektor mengelompokkan sektor ekonomi berdasarkan nilai Direct Backward Linkage (DBL) dan Direct Forward Linkage (DFL). Garis vertikal dan horizontal menunjukkan nilai rata-rata DBL dan DFL.
 
-Jumlah sektor pada Kuadran I (DBL tinggi, DFL tinggi) adalah `r nrow(quad1)` sektor, Kuadran II (DBL rendah, DFL tinggi) `r nrow(quad2)` sektor, Kuadran III (DBL rendah, DFL rendah) `r nrow(quad3)` sektor, dan Kuadran IV (DBL tinggi, DFL rendah) `r nrow(quad4)` sektor. Sektor pada Kuadran I umumnya merupakan sektor strategis karena memiliki keterkaitan kuat baik ke sektor hulu maupun hilir, sehingga berpotensi menjadi penggerak utama perekonomian wilaya
+Jumlah sektor pada Kuadran I (DBL tinggi, DFL tinggi) adalah `r nrow(subset(linkages_table, Quadrant == "Quadrant I"))` sektor, Kuadran II (DBL rendah, DFL tinggi) `r nrow(subset(linkages_table, Quadrant == "Quadrant II"))` sektor, Kuadran III (DBL rendah, DFL rendah) `r nrow(subset(linkages_table, Quadrant == "Quadrant III"))` sektor, dan Kuadran IV (DBL tinggi, DFL rendah) `r nrow(subset(linkages_table, Quadrant == "Quadrant IV"))` sektor. Sektor pada Kuadran I umumnya merupakan sektor strategis karena memiliki keterkaitan kuat baik ke sektor hulu maupun hilir, sehingga berpotensi menjadi penggerak utama perekonomian wilaya
 
 ## Tabel Sektor Setiap Kuadran {.tabset}
 
 ### Kuadran 1
 ```{r, echo=FALSE, message=FALSE, warning=FALSE}
-quadrant_1 <- subset(
-  linkages_table,
-  Quadrant == "Quadrant I"
-)
-
-DT::datatable(quadrant_1, rownames = FALSE) %>% 
-  DT::formatRound(
-    columns = c(
-      "DFL",
-      "TFL",
-      "ITFL",
-      "DBL",
-      "TBL",
-      "ITBL",
-      "|TFL-DFL|",
-      "|TBL-DBL|"
-    ),
-    digits = 3,
-    mark = ","
-  )
-
-top_q1 <- quadrant_1[
-  which.max(quadrant_1$DBL + quadrant_1$DFL),
-]
+quadrant_1 <- subset(linkages_table, Quadrant == "Quadrant I")
+DT::datatable(quadrant_1, rownames = FALSE) %>%
+  DT::formatRound(columns = c("DFL","TFL","ITFL","DBL","TBL","ITBL",
+                              "|TFL-DFL|","|TBL-DBL|"), digits = 3, mark = ",")
 ```
 
 Kuadran I menunjukkan sektor dengan keterkaitan ke depan dan ke belakang yang kuat (DBL > 1 dan DFL > 1). Sektor dalam kuadran ini berperan sebagai sektor unggulan karena mampu menyerap input dari sektor lain sekaligus menyuplai output untuk aktivitas ekonomi lainnya.
 
-Sektor dengan keterkaitan terbesar pada Kuadran I adalah **`r top_q1$SECTOR`** dengan nilai DBL sebesar `r round(top_q1$DBL, 3)` dan DFL sebesar `r round(top_q1$DFL, 3)`.
-
 ### Kuadran 2
 ```{r, echo=FALSE, message=FALSE, warning=FALSE}
-
-quadrant_2 <- subset(
-  linkages_table,
-  Quadrant == "Quadrant II"
-)
-
-DT::datatable(quadrant_2, rownames = FALSE) %>% 
-  DT::formatRound(
-    columns = c(
-      "DFL",
-      "TFL",
-      "ITFL",
-      "DBL",
-      "TBL",
-      "ITBL",
-      "|TFL-DFL|",
-      "|TBL-DBL|"
-    ),
-    digits = 3,
-    mark = ","
-  )
-
-top_q2 <- quadrant_2[
-  which.max(quadrant_2$DFL),
-]
+quadrant_2 <- subset(linkages_table, Quadrant == "Quadrant II")
+DT::datatable(quadrant_2, rownames = FALSE) %>%
+  DT::formatRound(columns = c("DFL","TFL","ITFL","DBL","TBL","ITBL",
+                              "|TFL-DFL|","|TBL-DBL|"), digits = 3, mark = ",")
 ```
 
 Kuadran II menunjukkan sektor dengan keterkaitan ke depan yang kuat namun keterkaitan ke belakang lemah (DBL < 1 dan DFL > 1). Sektor pada kuadran ini umumnya berfungsi sebagai penyedia bahan baku atau sektor hulu yang outputnya digunakan oleh banyak sektor lain.
 
-Sektor dengan keterkaitan terbesar pada Kuadran II adalah **`r top_q2$SECTOR`** dengan nilai DFL sebesar `r round(top_q2$DFL, 3)` dan DBL sebesar `r round(top_q2$DBL, 3)`.
-
 ### Kuadran 3
 ```{r, echo=FALSE, message=FALSE, warning=FALSE}
-
-quadrant_3 <- subset(
-  linkages_table,
-  Quadrant == "Quadrant III"
-)
-
-DT::datatable(quadrant_3, rownames = FALSE) %>% 
-  DT::formatRound(
-    columns = c(
-      "DFL",
-      "TFL",
-      "ITFL",
-      "DBL",
-      "TBL",
-      "ITBL",
-      "|TFL-DFL|",
-      "|TBL-DBL|"
-    ),
-    digits = 3,
-    mark = ","
-  )
-
-top_q3 <- quadrant_3[
-  which.max(quadrant_3$DBL),
-]
+quadrant_3 <- subset(linkages_table, Quadrant == "Quadrant III")
+DT::datatable(quadrant_3, rownames = FALSE) %>%
+  DT::formatRound(columns = c("DFL","TFL","ITFL","DBL","TBL","ITBL",
+                              "|TFL-DFL|","|TBL-DBL|"), digits = 3, mark = ",")
 ```
 
 Kuadran III menunjukkan sektor dengan keterkaitan ke belakang yang kuat namun keterkaitan ke depan lemah (DBL > 1 dan DFL < 1). Sektor dalam kuadran ini banyak menyerap input dari sektor lain, tetapi outputnya relatif tidak banyak digunakan sebagai input antar sektor.
 
-Sektor dengan keterkaitan terbesar pada Kuadran III adalah **`r top_q3$SECTOR`** dengan nilai DBL sebesar `r round(top_q3$DBL, 3)` dan DFL sebesar `r round(top_q3$DFL, 3)`.
-
 ### Kuadran 4
 ```{r, echo=FALSE, message=FALSE, warning=FALSE}
-
-quadrant_4 <- subset(
-  linkages_table,
-  Quadrant == "Quadrant IV"
-)
-
-DT::datatable(quadrant_4, rownames = FALSE) %>% 
-  DT::formatRound(
-    columns = c(
-      "DFL",
-      "TFL",
-      "ITFL",
-      "DBL",
-      "TBL",
-      "ITBL",
-      "|TFL-DFL|",
-      "|TBL-DBL|"
-    ),
-    digits = 3,
-    mark = ","
-  )
-
-top_q4 <- quadrant_4[
-  which.max(quadrant_4$DBL + quadrant_4$DFL),
-]
+quadrant_4 <- subset(linkages_table, Quadrant == "Quadrant IV")
+DT::datatable(quadrant_4, rownames = FALSE) %>%
+  DT::formatRound(columns = c("DFL","TFL","ITFL","DBL","TBL","ITBL",
+                              "|TFL-DFL|","|TBL-DBL|"), digits = 3, mark = ",")
 ```
 
 Kuadran IV menunjukkan sektor dengan keterkaitan ke depan dan ke belakang yang relatif lemah (DBL < 1 dan DFL < 1). Sektor pada kuadran ini cenderung memiliki keterbatasan dalam mendorong aktivitas ekonomi antar sektor dan sering kali memiliki ketergantungan yang lebih tinggi terhadap impor atau permintaan akhir.
 
-Sektor dengan keterkaitan terbesar pada Kuadran IV adalah **`r top_q4$SECTOR`** dengan nilai DBL sebesar `r round(top_q4$DBL, 3)` dan DFL sebesar `r round(top_q4$DFL, 3)`.
-
 # 5. PDRB per Sektor
 ```{r, echo=FALSE, message=FALSE, warning=FALSE}
-gdp_baseline <- calculate_gdp(added_value.m, intermediate_consumption.m, final_demand.m, sector, land_proportion, landuse_table, linkage_result$Leontief)
-
-total_gdp <- sum(
-  gdp_baseline$GDP,
-  na.rm = TRUE
-)
+total_gdp <- sum(gdp_baseline$GDP, na.rm = TRUE)
 
 layout_columns(
   col_widths = c(4, 8),
-
   value_box(
-    title = tags$div(
-    style = "font-size:18px; font-weight:600;",
-    "Total PDRB Seluruh Sektor"
-  ),
-  
-  value = tags$div(
-    style = "font-size:36px; font-weight:700;",
-    paste0(
-      format(
-        round(total_gdp, 0),
-        big.mark = ","
-      ),
-      " Juta Rupiah"
-    )
-  ),
-
+    title = tags$div(style = "font-size:18px; font-weight:600;",
+                     "Total PDRB Seluruh Sektor"),
+    value = tags$div(style = "font-size:36px; font-weight:700;",
+                     paste0(format(round(total_gdp, 0), big.mark = ","),
+                            " Juta Rupiah")),
     theme = "bg-success text-white"
   ),
-
   NULL
 )
 
-tags$div(
-  style = "height:30px;"
-)
+tags$div(style = "height:30px;")
 
-DT::datatable(gdp_baseline %>%
-                dplyr::select(-Total_OUTPUT)) %>%
-  DT::formatRound(c("GDP", "OUTPUT", "Land_Requirement", "FD"), digits = 2, mark = ",") %>%
-  DT::formatRound(c("GDP_PROP", "LPC", "Prop_FD"), digits = 2) 
-
-top_gdp <- gdp_baseline[which.max(gdp_baseline$GDP), ]
-top_output <- gdp_baseline[which.max(gdp_baseline$OUTPUT), ]
-top_fd <- gdp_baseline[which.max(gdp_baseline$FD), ]
+DT::datatable(gdp_baseline %>% dplyr::select(-Total_OUTPUT)) %>%
+  DT::formatRound(c("GDP", "OUTPUT", "Land_Requirement", "FD"),
+                  digits = 2, mark = ",") %>%
+  DT::formatRound(c("GDP_PROP", "LPC", "Prop_FD"), digits = 2)
 ```
 
 Tabel PDRB per sektor menunjukkan kontribusi ekonomi masing-masing sektor berdasarkan nilai tambah bruto (PDRB), output total, kebutuhan lahan, permintaan akhir (final demand), dan output total hasil model Leontief.
 
-Sektor dengan nilai PDRB terbesar adalah **`r top_gdp$SECTOR`** dengan nilai `r format(round(top_gdp$GDP, 2), big.mark = ",")`. Sementara itu, sektor dengan output terbesar adalah **`r top_output$SECTOR`** dengan nilai output sebesar `r format(round(top_output$OUTPUT, 2), big.mark = ",")`. Permintaan akhir (Final Demand) terbesar terdapat pada sektor **`r top_fd$SECTOR`** dengan nilai `r format(round(top_fd$FD, 2), big.mark = ",")`.
+Sektor dengan nilai PDRB terbesar adalah `r gdp_baseline$SECTOR[which.max(gdp_baseline$GDP)]` dengan nilai `r format(round(max(gdp_baseline$GDP), 2), big.mark = ",")`. Sementara itu, sektor dengan output terbesar adalah `r gdp_baseline$SECTOR[which.max(gdp_baseline$OUTPUT)]` dengan nilai output sebesar `r format(round(max(gdp_baseline$OUTPUT), 2), big.mark = ",")`. Permintaan akhir (Final Demand) terbesar terdapat pada sektor `r gdp_baseline$SECTOR[which.max(gdp_baseline$FD)]` dengan nilai `r format(round(max(gdp_baseline$FD), 2), big.mark = ",")`.
 
 # 6. Kontribusi PDRB per Sektor {.tabset}
 
@@ -354,63 +355,27 @@ Sektor dengan nilai PDRB terbesar adalah **`r top_gdp$SECTOR`** dengan nilai `r 
 ```{r, echo=FALSE, message=FALSE, warning=FALSE}
 gdp_bar <- generate_gdp_bar_chart(gdp_baseline, sector)
 ggplotly(gdp_bar$plot, tooltip = "text")
-
-top_sector <- gdp_bar$data$SECTOR[1]
-top_value <- gdp_bar$data$GDP[1]
-top_pct <- gdp_bar$data$PERCENTAGE[1]
 ```
 
-Grafik menunjukkan 10 sektor dengan kontribusi PDRB terbesar. Sektor **`r top_sector`** merupakan kontributor terbesar dengan nilai PDRB sebesar `r format(round(top_value,0), big.mark = ",")` juta rupiah atau sekitar `r round(top_pct,2)`% dari total PDRB wilayah. Semakin tinggi batang pada grafik, semakin besar kontribusi sektor tersebut terhadap perekonomian daerah.
+Grafik menunjukkan 10 sektor dengan kontribusi PDRB terbesar. Sektor `r gdp_bar$data$SECTOR[1]` merupakan kontributor terbesar dengan nilai PDRB sebesar `r format(round(gdp_bar$data$GDP[1],0), big.mark = ",")` juta rupiah atau sekitar `r round(gdp_bar$data$PERCENTAGE[1],2)`% dari total PDRB wilayah.
 
 ## Proporsi Sektor
 ```{r, echo=FALSE, message=FALSE, warning=FALSE}
 gdp_donut <- generate_gdp_donut_chart(gdp_baseline, sector)
 gdp_donut$plot
-
-donut_top_sector <- gdp_donut$data$SECTOR[1]
-donut_top_gdp <- gdp_donut$data$GDP[1]
-donut_top_contribution <- gdp_donut$data$CONTRIBUTION[1]
 ```
 
-Diagram donat menunjukkan kontribusi 10 sektor terbesar terhadap total PDRB wilayah. Sektor **`r donut_top_sector`** merupakan kontributor terbesar dengan nilai PDRB sebesar `r format(round(donut_top_gdp, 0), big.mark = ",")` juta rupiah atau sekitar `r donut_top_contribution`% dari total PDRB. Besarnya irisan pada diagram mencerminkan kontribusi masing-masing sektor terhadap keseluruhan perekonomian wilayah.
+Diagram donat menunjukkan kontribusi 10 sektor terbesar terhadap total PDRB wilayah. Sektor `r gdp_donut$data$SECTOR[1]` merupakan kontributor terbesar dengan nilai PDRB sebesar `r format(round(gdp_donut$data$GDP[1],0), big.mark = ",")` juta rupiah atau sekitar `r gdp_donut$data$CONTRIBUTION[1]`% dari total PDRB.
 
 # 7. Tabel Multiplier per Sektor
 ```{r, echo=FALSE, message=FALSE, warning=FALSE}
-OM <- calc_output_multiplier(linkage_result$Leontief, sector)
-
-IM <- calc_income_multiplier(linkage_result$Leontief, gdp_baseline$Total_OUTPUT, added_value.m, sector)
-
-LM <- calc_labour_multiplier(linkage_result$Leontief, labour, gdp_baseline$Total_OUTPUT, sector)
-
-SUBM <- calc_sub_multiplier(linkage_result$Leontief, intermediate_consumption.m, added_value.m, sector)
-
-multiplier_table <- combine_multipliers(OM, IM, LM, SUBM)
-
 DT::datatable(multiplier_table) %>%
-  DT::formatRound(c("Out.multiplier", "Inc.multiplier", "SUB.multiplier"), digits = 2) %>%
+  DT::formatRound(c("Out.multiplier", "Inc.multiplier", "SUB.multiplier"),
+                  digits = 2) %>%
   DT::formatRound("Lab.multiplier", digits = 5)
-
-mult_top_output <- multiplier_table[which.max(multiplier_table$Out.multiplier), ]
-mult_top_income <- multiplier_table[which.max(multiplier_table$Inc.multiplier), ]
-mult_top_labour <- multiplier_table[which.max(multiplier_table$Lab.multiplier), ]
-mult_top_sub <- multiplier_table[which.max(multiplier_table$SUB.multiplier), ]
 ```
 
-Analisis multiplier menunjukkan bahwa sektor **`r mult_top_output$SECTOR`** memiliki Output Multiplier tertinggi (`r round(mult_top_output$Out.multiplier,3)`), sehingga memberikan dampak terbesar terhadap peningkatan output ekonomi. Sektor **`r mult_top_income$SECTOR`** memiliki Income Multiplier tertinggi (`r round(mult_top_income$Inc.multiplier,3)`), yang menunjukkan kemampuan terbesar dalam menciptakan pendapatan tenaga kerja. Sementara itu, sektor **`r mult_top_labour$SECTOR`** memiliki Labour Multiplier tertinggi (`r signif(mult_top_labour$Lab.multiplier,4)`), sehingga berpotensi memberikan dampak terbesar terhadap penciptaan kesempatan kerja. Di sisi lain, sektor **`r mult_top_sub$SECTOR`** memiliki Surplus Usaha Bruto (SUB) Multiplier tertinggi (`r round(mult_top_sub$SUB.multiplier,3)`), yang menunjukkan kemampuan terbesar dalam menghasilkan surplus usaha dan keuntungan ekonomi.
-
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
-full_io_result <- build_full_io_table(
-  sector = sector,
-  intermediate_consumption_m = intermediate_consumption.m,
-  final_demand_m = final_demand.m,
-  final_demand_component = final_demand_component,
-  added_value_m = added_value.m,
-  added_value_lookup = added_value_lookup
-)
-
-full_io_table <- full_io_result$full_io_table
-code_registry <- full_io_result$code_registry
-```
+Analisis multiplier menunjukkan bahwa sektor `r multiplier_table$SECTOR[which.max(multiplier_table$Out.multiplier)]` memiliki Output Multiplier tertinggi (`r round(max(multiplier_table$Out.multiplier),3)`), sehingga memberikan dampak terbesar terhadap peningkatan output ekonomi. Sektor `r multiplier_table$SECTOR[which.max(multiplier_table$Inc.multiplier)]` memiliki Income Multiplier tertinggi (`r round(max(multiplier_table$Inc.multiplier),3)`), yang menunjukkan kemampuan terbesar dalam menciptakan pendapatan tenaga kerja. Sektor `r multiplier_table$SECTOR[which.max(multiplier_table$Lab.multiplier)]` memiliki Labour Multiplier tertinggi (`r signif(max(multiplier_table$Lab.multiplier),4)`), sehingga berpotensi memberikan dampak terbesar terhadap penciptaan kesempatan kerja. Di sisi lain, sektor `r multiplier_table$SECTOR[which.max(multiplier_table$SUB.multiplier)]` memiliki Surplus Usaha Bruto (SUB) Multiplier tertinggi (`r round(max(multiplier_table$SUB.multiplier),3)`), yang menunjukkan kemampuan terbesar dalam menghasilkan surplus usaha dan keuntungan ekonomi.
 
 ```{r export, echo=FALSE, message=FALSE, warning=FALSE}
 # Export Excel
@@ -418,6 +383,7 @@ export_io_analysis(
   gdp_baseline    = gdp_baseline,
   linkage_result  = linkage_result,
   growth_rate     = growth_rate,
+  labour          = labour,
   OM = OM, IM = IM, LM = LM, SUBM = SUBM,
   land_proportion = land_proportion,
   linkage_table   = linkages_table,
@@ -427,7 +393,7 @@ export_io_analysis(
   output_path     = "inst/extdata/output/IO_Analysis_Output.xlsx"
 )
 
-# Save RDS
+# Save RDS files
 save_analysis_data(
   sector                   = sector,
   intermediate_consumption_m = intermediate_consumption.m,
@@ -442,7 +408,6 @@ save_analysis_data(
   OM = OM, IM = IM, LM = LM, SUBM = SUBM,
   full_io_table            = full_io_table,
   code_registry            = code_registry,
-  output_path              = "inst/extdata/output/io_descriptive.rds",
-  format                   = "rds"
+  output_dir               = "inst/extdata/output"
 )
 ```
