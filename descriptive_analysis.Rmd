@@ -45,6 +45,9 @@ Dokumen ini adalah notebook R Markdown berjudul "Trade-off Analysis (TA) Ekonomi
 7. [Tabel Multiplier per Sektor](#tabel-multiplier-per-sektor)
 
 ```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# =====================================================
+# INPUT
+# =====================================================
 io_file <- "inst/extdata/example_data/Bukecap/Input_IO_Bukecap_2025.xlsx" 
 growth_rate_file <- "inst/extdata/example_data/Bukecap/laju_pertumbuhan_bukecap.xlsx"
 landuse_table_file <- "inst/extdata/example_data/Bukecap/landcover_lookuptable_bukecap.xlsx"
