@@ -84,10 +84,6 @@ full_io_result <- build_full_io_table(
 full_io_table <- full_io_result$full_io_table
 code_registry <- full_io_result$code_registry
 
-sector_idx <- which(code_registry$Type == "Sector")
-n_sector <- nrow(sector)
-P_default <- land_proportion
-
 # Save preprocessing results to RDS
 input_preprocessing <- list(
   sector                   = sector,
@@ -98,13 +94,10 @@ input_preprocessing <- list(
   added_value_lookup       = added_value_lookup,
   labour                   = labour,
   land_proportion          = land_proportion,
-  P_default                = P_default,
   landuse_table            = landuse_table,
   growth_rate              = growth_rate,
   full_io_table            = full_io_table,
-  code_registry            = code_registry,
-  sector_idx               = sector_idx,
-  n_sector                 = n_sector
+  code_registry            = code_registry
 )
 
 # Save preprocessing results
@@ -129,7 +122,6 @@ landuse_table              <- input_preprocessing$landuse_table
 growth_rate                <- input_preprocessing$growth_rate
 full_io_table              <- input_preprocessing$full_io_table
 code_registry              <- input_preprocessing$code_registry
-sector_idx                 <- input_preprocessing$sector_idx
 
 # Balance check
 balance_result <- check_io_balance(
@@ -216,8 +208,6 @@ IM                  <- core_analysis_results$income_multiplier
 LM                  <- core_analysis_results$labour_multiplier
 SUBM                <- core_analysis_results$sub_multiplier
 multiplier_table    <- core_analysis_results$multiplier_table
-full_io_table       <- core_analysis_results$full_io_table
-code_registry       <- core_analysis_results$code_registry
 ```
 
 # 1. Analisis Deskriptif
