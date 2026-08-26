@@ -49,8 +49,8 @@ Dokumen ini adalah notebook R Markdown berjudul "Trade-off Analysis (TA) Ekonomi
 # =====================================================
 # INPUT
 # =====================================================
-io_file_path <- "inst/extdata/example_data/Input_IO_template_BUKECAP.xlsx" 
-landuse_table_file_path <- "inst/extdata/example_data/Input_penutup_lahan_template_BUKECAP.xlsx"
+io_file_path <- "inst/extdata/example_data/Bukecap/Input_IO_template_BUKECAP.xlsx" 
+landuse_table_file_path <- "inst/extdata/example_data/Bukecap/Input_penutup_lahan_template_BUKECAP.xlsx"
 output_dir <- "inst/extdata/output/"
 
 # =====================================================
@@ -462,6 +462,6 @@ save_analysis_data(
   OM = OM, IM = IM, LM = LM, SUBM = SUBM,
   full_io_table            = full_io_table,
   code_registry            = code_registry,
-  output_dir               = "inst/extdata/output"
+  output_dir               = output_dir
 )
 ```
