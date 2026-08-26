@@ -4,7 +4,13 @@
 \alias{read_input_file}
 \title{Read input file (Excel or CSV) into a tibble or matrix}
 \usage{
-read_input_file(path, sheet = NULL, header = FALSE, as_matrix = FALSE)
+read_input_file(
+  path,
+  sheet = NULL,
+  skip = 0,
+  header = FALSE,
+  as_matrix = FALSE
+)
 }
 \arguments{
 \item{path}{Character. Path to the input file.}
@@ -12,7 +18,10 @@ read_input_file(path, sheet = NULL, header = FALSE, as_matrix = FALSE)
 \item{sheet}{Character or `NULL`. Sheet name for Excel files. If `NULL`,
 the first sheet is used.}
 
-\item{header}{Logical. If `TRUE`, the first row is treated as column names.}
+\item{skip}{Integer. Number of rows to skip before reading data.}
+
+\item{header}{Logical. If `TRUE`, the first row after `skip` is used as
+column names.}
 
 \item{as_matrix}{Logical. If `TRUE`, the data is returned as a matrix.}
 }
