@@ -1,7 +1,8 @@
 ---
 title: "TA Regional Economy Module - Descriptive Analysis Notebook"
-author: "Yumna Karimah"
+author: "LUMENS Developer Team"
 date: "`r Sys.Date()`"
+time: "`r format(Sys.time(), '%H:%M:%S')`"
 output:
   html_document: default
   word_document: default
@@ -216,8 +217,9 @@ LM   <- calc_labour_multiplier(leontief_result$Leontief,
                                labour,
                                gdp_baseline$Total_OUTPUT, sector)
 SUBM <- calc_sub_multiplier(leontief_result$Leontief,
-                            intermediate_consumption.m,
-                            added_value.m, sector)
+                            gdp_baseline$OUTPUT, 
+                            added_value.m, 
+                            intermediate_consumption.m, sector)
 multiplier_table <- combine_multipliers(OM, IM, LM, SUBM)
 
 # Save core analysis results to RDS
@@ -391,7 +393,7 @@ layout_columns(
 tags$div(style = "height:30px;")
 
 DT::datatable(gdp_baseline %>% dplyr::select(-Total_OUTPUT)) %>%
-  DT::formatRound(c("GDP", "OUTPUT", "Land_Requirement", "FD"),
+  DT::formatRound(c("GDP", "OUTPUT", "Land_Requirement", "FD", "LRC"),
                   digits = 2, mark = ",") %>%
   DT::formatRound(c("GDP_PROP", "LPC", "Prop_FD"), digits = 2)
 ```

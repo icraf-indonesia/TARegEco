@@ -19,19 +19,22 @@ A list with elements:
   \item{inverse_total_input}{Vector of inverse total input per sector}
 }
 \description{
-Calculates the technical coefficient matrix (A) and the Leontief inverse
-\eqn{(I - A)^{-1}} from intermediate consumption and added value matrices.
+Computes the technical coefficient matrix (A) and the Leontief inverse
+\eqn{(I - A)^{-1}} using validated added value components rather than
+raw column sums.
 }
 \details{
-The technical coefficient matrix is computed as:
-\deqn{A = Z \times diag(1 / total\_input)}
-where total input for sector j is the sum of intermediate consumption
-column j and added value column j. The Leontief inverse is then obtained
-as \eqn{L = (I - A)^{-1}}.
+Total input is computed using [get_added_value_components()], which
+identifies only the relevant primary-input rows (compensation, surplus,
+taxes, imports) instead of summing all rows of the added value matrix.
 }
 \examples{
 \dontrun{
 leontief_result <- compute_leontief(ic, av)
 }
 
+}
+\references{
+Miller, R.E. & Blair, P.D. (2009). *Input-Output Analysis: Foundations and
+Extensions*. Eurostat (2008). *Manual of Supply, Use and Input-Output Tables*.
 }
