@@ -110,3 +110,39 @@ generate_gdp_donut_chart <- function(gdp_sector, sector_info, top_n = 10) {
   
   list(plot = p, data = plot_df)
 }
+
+#' Plot comparison of scenarios
+#'
+#' Creates a line plot comparing a chosen indicator across scenarios over
+#' the projection years. If only one scenario is provided, a single line is
+#' drawn.
+#'
+#' @param data A data frame with columns `YEAR`, `SCENARIO`, and the
+#'   indicator column specified in `value_col`.
+#' @param value_col Character. Name of the indicator column to plot.
+#' @param title Character. Plot title.
+#' @param y_label Character. Label for the y-axis.
+#'
+#' @return A `ggplot` object.
+#'
+#' @export
+plot_comparison <- function(data, value_col, title, y_label) {
+  n_scenarios <- length(unique(data$SCENARIO))
+  
+  if (n_scenarios > 1) {
+    ggplot(data, aes(x = YEAR, y = .data[[value_col]], color = SCENARIO)) +
+      geom_line(linewidth = 1) +
+      geom_point(size = 2) +
+      scale_x_continuous(breaks = unique(data$YEAR)) +
+      scale_color_brewer(palette = "Set1") +
+      labs(title = title, x = "Tahun", y = y_label, color = "Skenario") +
+      theme_minimal()
+  } else {
+    ggplot(data, aes(x = YEAR, y = .data[[value_col]])) +
+      geom_line(linewidth = 1, color = "#4472C4") +
+      geom_point(size = 3, color = "#4472C4") +
+      scale_x_continuous(breaks = unique(data$YEAR)) +
+      labs(title = title, x = "Tahun", y = y_label) +
+      theme_minimal()
+  }
+}

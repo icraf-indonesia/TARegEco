@@ -1,8 +1,6 @@
 ---
 title: "TA Regional Economy Module - Descriptive Analysis Notebook"
 author: "LUMENS Developer Team"
-date: "`r Sys.Date()`"
-time: "`r format(Sys.time(), '%H:%M:%S')`"
 output:
   html_document: default
   word_document: default
@@ -34,6 +32,10 @@ source_files <- list.files("R", pattern = "\\.R$", full.names = TRUE)
 invisible(lapply(source_files, source))
 ```
 
+Tanggal render: `r Sys.Date()`
+
+Waktu render: `r format(Sys.time(), '%H:%M:%S')`
+
 # Pendahuluan
 
 Dokumen ini adalah notebook R Markdown berjudul "Trade-off Analysis (TA) Ekonomi Regional". Notebook ini akan dihasilkan dan mencakup baik konten maupun output yang terdapat dalam dokumen.
@@ -50,8 +52,15 @@ Dokumen ini adalah notebook R Markdown berjudul "Trade-off Analysis (TA) Ekonomi
 # =====================================================
 # INPUT
 # =====================================================
-io_file_path <- "inst/extdata/example_data/Bukecap/Input_IO_template_BUKECAP.xlsx" 
+io_file_path <- "inst/extdata/example_data/Bukecap/Input_IO_template_BUKECAP.xlsx"
 landuse_table_file_path <- "inst/extdata/example_data/Bukecap/Input_penutup_lahan_template_BUKECAP.xlsx"
+
+# =====================================================
+# Input: PADAGIMO (uncomment line di bawah ini jika yang dijalankan PADGIMO)
+# io_file_path <- "inst/extdata/example_data/Padagimo/Input_IO_template_PADAGIMO.xlsx" 
+# landuse_table_file_path <- "inst/extdata/example_data/Padagimo/Input_penutup_lahan_template_PADAGIMO.xlsx"
+# =====================================================
+
 output_dir <- "inst/extdata/output/"
 
 # =====================================================
