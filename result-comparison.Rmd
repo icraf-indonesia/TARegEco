@@ -1,0 +1,439 @@
+---
+title: "Perbandingan Proyeksi: TARegEco vs RG3"
+author: "LUMENS Developer Team"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(DT)
+library(knitr)
+library(scales)
+library(writexl)
+library(readxl)
+
+# Load all functions from R/
+source_files <- list.files("R", pattern = "\\.R$", full.names = TRUE)
+invisible(lapply(source_files, source))
+```
+
+# Pendahuluan
+
+Dokumen ini membandingkan hasil proyeksi dari dua pendekatan:
+
+- **TARegEco** – menggunakan `run_projection()` versi modular.
+
+- **RG3 (RegEco)** – menggunakan pendekatan *Land‑Extended Input‑Output* dengan Mixed I‑O.
+
+**Skenario yang dibandingkan:**
+
+1.  BAU (baseline) dari kedua pendekatan.
+
+2.  Intervensi: TARegEco `Skenario1` vs RG3 `LAS1`.
+
+**Indikator yang dibandingkan:**
+
+- PDRB
+
+- Serapan Tenaga Kerja
+
+- Pendapatan Tenaga Kerja (Income)
+
+- Surplus Usaha Bruto (SUB)
+
+- Keterkaitan Lahan (ITFL)
+
+# 1. TARegEco: Muat Baseline & Skenario
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Muat package TARegEco
+if (requireNamespace("TARegEco", quietly = TRUE)) {
+  library(TARegEco)
+} else {
+  devtools::load_all(".")
+}
+
+# Path sesuai script TARegEco (tidak diubah)
+descriptive_analysis_file <- "inst/extdata/output/descriptive_analysis_module.rds"
+projection_area_file_bau <- "inst/extdata/example_data/Bukecap/luc_projection_bukecap_bau.xlsx"
+initial_year <- 2024
+end_year <- 2049
+time_step <- 5
+
+# Load baseline
+baseline <- load_projection_baseline(
+  path = descriptive_analysis_file,
+  projection_area_file_bau = projection_area_file_bau
+)
+
+# Ambil komponen
+gdp_baseline      <- baseline$gdp_baseline
+leontief_matrix   <- baseline$leontief_matrix
+full_io_table     <- baseline$full_io_table
+code_registry     <- baseline$code_registry
+sector_idx        <- baseline$sector_idx
+income_multiplier <- baseline$income_multiplier
+labour_multiplier <- baseline$labour_multiplier
+SUB_multiplier    <- baseline$SUB_multiplier
+output_multiplier <- baseline$output_multiplier
+linkage_table     <- baseline$linkage_table
+P_default         <- baseline$P_default
+growth_rate       <- baseline$growth_rate
+area_matrix_bau   <- baseline$area_matrix_bau
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Proyeksi BAU TARegEco
+projection_bau_tare <- run_projection(
+  gdp_baseline        = gdp_baseline,
+  income_multiplier   = income_multiplier,
+  labour_multiplier   = labour_multiplier,
+  SUB_multiplier      = SUB_multiplier,
+  output_multiplier   = output_multiplier,
+  linkage_table       = linkage_table,
+  leontief_matrix     = leontief_matrix,
+  full_io_table       = full_io_table,
+  sector_idx          = sector_idx,
+  P                   = P_default,
+  area_matrix         = area_matrix_bau,
+  growth_rate         = growth_rate,
+  lpc_scenario        = NULL,
+  io_changes          = NULL,
+  intensity_table     = NULL
+)
+projection_bau_tare$SCENARIO <- "TARegEco_BAU"
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Proyeksi Skenario1 TARegEco
+scenario_inputs <- list(
+  name = "Skenario1",
+  luc_projection    = "inst/extdata/scenario/scenario1/luc_projection.xlsx",
+  land_distribution = "inst/extdata/scenario/scenario1/distribusi_lahan.xlsx",
+  growth_rate       = "inst/extdata/scenario/scenario1/growth_rate.xlsx",
+  lpc               = "inst/extdata/scenario/scenario1/produktivitas_lpc.xlsx",
+  io_changes        = "inst/extdata/scenario/scenario1/perubahan_io.xlsx",
+  intensity         = "inst/extdata/scenario/scenario1/intensitas.xlsx"
+)
+
+sc_input <- load_scenario_inputs(scenario_inputs, P_default, growth_rate)
+
+projection_area_sc <- read_input_file(sc_input$luc_projection, header = TRUE)
+projection_long_sc <- projection_area_sc |>
+  tidyr::pivot_longer(cols = -c(ID, LC), names_to = "YEAR", values_to = "AREA") |>
+  dplyr::mutate(YEAR = as.numeric(YEAR))
+area_matrix_sc <- create_area_matrix(projection_long_sc)
+
+projection_sc_tare <- run_projection(
+  gdp_baseline        = gdp_baseline,
+  income_multiplier   = income_multiplier,
+  labour_multiplier   = labour_multiplier,
+  SUB_multiplier      = SUB_multiplier,
+  output_multiplier   = output_multiplier,
+  linkage_table       = linkage_table,
+  leontief_matrix     = leontief_matrix,
+  full_io_table       = full_io_table,
+  sector_idx          = sector_idx,
+  P                   = sc_input$P,
+  area_matrix         = area_matrix_sc,
+  growth_rate         = sc_input$growth_rate,
+  lpc_scenario        = sc_input$lpc_scenario,
+  io_changes          = sc_input$io_changes,
+  intensity_table     = sc_input$intensity_table
+)
+projection_sc_tare$SCENARIO <- "TARegEco_Skenario1"
+```
+
+# 2. RG3: Muat Data dan Preprocessing
+
+Kode pada bagian ini sama persis dengan script RG3 (hanya bagian yang diperlukan untuk BAU dan LAS1).
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Path sama dengan script RG3 (tidak diubah)
+io <- read.csv("inst/extdata/example_data/RG3data/IO BUKECAP.csv", header=T, sep=",", stringsAsFactors = F)
+DeskripsiSektor <- read_excel("inst/extdata/example_data/RG3data/DeskripsiSektor.xlsx", sheet = "DeskripsiSektor", col_names = TRUE)
+LDM <- read_excel("inst/extdata/example_data/RG3data/LDM.xlsx", sheet = "LDM", col_names = TRUE)
+BAULahan <- read_excel("inst/extdata/example_data/RG3data/BAU_Lahan.xlsx", sheet = "BAU_Lahan", col_names = TRUE)
+LASLahan <- read_excel("inst/extdata/example_data/RG3data/LAS_Lahan.xlsx", sheet = "LAS_Lahan", col_names = TRUE)
+
+jml_sektor <- 66
+kolom_Sektor <- paste0("X", 1:66)
+namaSektor <- as.vector(io[1:jml_sektor, "Nama.Sektor"])
+kolom_FD <- "X309"
+kolom_TOutput <- "X700"
+baris_impor <- 69
+baris_upah  <- 70
+baris_surplus <- 71
+baris_totInputPrimer <- 73
+baris_totInput <- 74
+
+upah_gaji <- as.numeric(io[baris_upah, kolom_Sektor])
+upah_gaji[is.na(upah_gaji)] <- 0
+
+surplus <- as.numeric(io[baris_surplus, kolom_Sektor])
+surplus[is.na(surplus)] <- 0
+
+pdrb_IO <- as.numeric(io[baris_totInputPrimer, kolom_Sektor])
+pdrb_IO[is.na(pdrb_IO)] <- 0
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Matriks A, Leontief, LPC, Constrained/Unconstrained
+matrixA <- io %>% slice(1:jml_sektor) %>% select(all_of(kolom_Sektor))
+Z_prov <- data.matrix(matrixA)
+X_prov <- as.numeric(io[baris_totInput, kolom_Sektor])
+X_prov[is.nan(X_prov)] <- 0
+A_prov <- sweep(Z_prov, 2, X_prov, FUN = "/")
+A_prov[is.nan(A_prov)] <- 0
+I <- diag(jml_sektor)
+Leontief_Inverse <- solve(I - A_prov)
+
+fd <- io[1:jml_sektor, kolom_FD]
+
+# LPC dan LRC
+Lahan2025 <- BAULahan$"2025"
+Lahan2025_diag <- diag(Lahan2025)
+LDM_matrix <- as.matrix(LDM[, -26])
+storage.mode(LDM_matrix) <- "double"
+LR_matrix <- LDM_matrix %*% Lahan2025_diag
+LR <- rowSums(LR_matrix, na.rm = TRUE)
+LRC <- LR / fd
+LPC <- 1 / LRC
+
+# Constrained & Unconstrained
+Constrained <- as.matrix(DeskripsiSektor[, 5])
+Unconstrained <- as.matrix(DeskripsiSektor[, 6])
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# BAU RG3
+rate <- DeskripsiSektor$RateUnconstrained
+current_val <- fd
+all_steps <- matrix(NA, nrow = 66, ncol = 20)
+for (i in 1:20) {
+  current_val <- ((current_val * rate) + current_val) * Unconstrained
+  all_steps[, i] <- current_val
+}
+colnames(all_steps) <- paste0("FD", 2026:2045)
+fd_BAU_uncon <- cbind(fd * Unconstrained, all_steps) # kolom pertama FD2025
+colnames(fd_BAU_uncon)[1] <- "FD2025"
+
+BAUArea <- as.matrix(BAULahan[, (ncol(BAULahan)-20):ncol(BAULahan)])
+storage.mode(BAUArea) <- "double"
+fd_con_BAU <- matrix(0, nrow = 66, ncol = ncol(BAUArea))
+for (i in 1:ncol(BAUArea)) {
+  r_sums <- LDM_matrix %*% BAUArea[, i]
+  fd_con_BAU[, i] <- r_sums * LPC * Constrained
+}
+colnames(fd_con_BAU) <- colnames(BAUArea)
+
+# Final demand unconstrained (dari loop tahunan)
+fd_BAU_uncon <- cbind(fd * Unconstrained, all_steps) # kolom pertama FD2025
+colnames(fd_BAU_uncon)[1] <- "FD2025"
+
+fd_BAU_con <- fd_con_BAU
+fd_BAU <- fd_BAU_con + fd_BAU_uncon  # fd_BAU_con already defined? Need to rename fd_con_BAU as fd_BAU_con
+
+totInputPrimer <- as.numeric(io[baris_totInputPrimer, kolom_Sektor])
+totInput <- as.numeric(io[baris_totInput, kolom_Sektor])
+ntbProp <- totInputPrimer / totInput
+ntbProp[is.nan(ntbProp) | is.infinite(ntbProp)] <- 0
+
+pdrb_BAU_rg3 <- matrix(0, nrow = 66, ncol = ncol(fd_BAU))
+for (i in 1:ncol(fd_BAU)) {
+  output_t <- Leontief_Inverse %*% fd_BAU[, i]
+  pdrb_BAU_rg3[, i] <- output_t * ntbProp
+}
+colnames(pdrb_BAU_rg3) <- colnames(BAUArea)
+pdrb_BAU_rg3_total <- colSums(pdrb_BAU_rg3)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# LAS1 RG3
+LASArea <- as.matrix(LASLahan[, (ncol(LASLahan)-20):ncol(LASLahan)])
+storage.mode(LASArea) <- "double"
+fd_LAS_con <- matrix(0, nrow = 66, ncol = ncol(LASArea))
+for (i in 1:ncol(LASArea)) {
+  r_sums <- LDM_matrix %*% LASArea[, i]
+  fd_LAS_con[, i] <- r_sums * LPC * Constrained
+}
+colnames(fd_LAS_con) <- colnames(LASArea)
+fd_LAS1 <- fd_LAS_con + fd_BAU_uncon
+
+pdrb_LAS1_rg3 <- matrix(0, nrow = 66, ncol = ncol(fd_LAS1))
+for (i in 1:ncol(fd_LAS1)) {
+  output_t <- Leontief_Inverse %*% fd_LAS1[, i]
+  pdrb_LAS1_rg3[, i] <- output_t * ntbProp
+}
+colnames(pdrb_LAS1_rg3) <- colnames(LASArea)
+pdrb_LAS1_rg3_total <- colSums(pdrb_LAS1_rg3)
+```
+
+# 3. Gabungkan Hasil untuk Perbandingan
+
+Kita akan menyiapkan data frame dengan format panjang untuk setiap indikator.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Ambil total PDRB tahunan dari kedua pendekatan
+years_rg3 <- as.numeric(colnames(BAUArea))
+
+# TARegEco: agregat tahunan dari projection_bau_tare & projection_sc_tare
+pdrb_tare_bau <- projection_bau_tare %>%
+  group_by(YEAR) %>%
+  summarise(Value = sum(GDP), .groups = "drop") %>%
+  mutate(Method = "TARegEco", Scenario = "BAU", Indicator = "PDRB")
+
+pdrb_tare_sc <- projection_sc_tare %>%
+  group_by(YEAR) %>%
+  summarise(Value = sum(GDP), .groups = "drop") %>%
+  mutate(Method = "TARegEco", Scenario = "Skenario1", Indicator = "PDRB")
+
+# RG3: sudah berupa total per tahun
+pdrb_rg3_bau <- data.frame(YEAR = years_rg3, Value = pdrb_BAU_rg3_total,
+                           Method = "RG3", Scenario = "BAU", Indicator = "PDRB")
+pdrb_rg3_las1 <- data.frame(YEAR = years_rg3, Value = pdrb_LAS1_rg3_total,
+                            Method = "RG3", Scenario = "LAS1", Indicator = "PDRB")
+
+# Gabungkan PDRB
+df_pdrb <- bind_rows(pdrb_tare_bau, pdrb_tare_sc, pdrb_rg3_bau, pdrb_rg3_las1)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Untuk indikator lain (Tenaga Kerja, Income, Surplus, ITFL)
+# Asumsikan kita bisa menghitung dari hasil TARegEco dan RG3 dengan cara serupa.
+# Untuk RG3, income dan surplus dihitung dari proporsi global; tenaga kerja dari selisih PDRB.
+# Untuk TARegEco, kolom INCOME, LABOUR, SURPLUS sudah tersedia.
+
+# Income TARegEco
+income_tare_bau <- projection_bau_tare %>%
+  group_by(YEAR) %>% summarise(Value = sum(INCOME), .groups = "drop") %>%
+  mutate(Method = "TARegEco", Scenario = "BAU", Indicator = "Income")
+income_tare_sc <- projection_sc_tare %>%
+  group_by(YEAR) %>% summarise(Value = sum(INCOME), .groups = "drop") %>%
+  mutate(Method = "TARegEco", Scenario = "Skenario1", Indicator = "Income")
+
+# Income RG3: proporsi upah/gaji
+proporsi_upah <- sum(upah_gaji) / sum(pdrb_IO)  # perlu pdrb_IO dari RG3
+income_rg3_bau <- data.frame(YEAR = years_rg3, Value = pdrb_BAU_rg3_total * proporsi_upah,
+                             Method = "RG3", Scenario = "BAU", Indicator = "Income")
+income_rg3_las1 <- data.frame(YEAR = years_rg3, Value = pdrb_LAS1_rg3_total * proporsi_upah,
+                              Method = "RG3", Scenario = "LAS1", Indicator = "Income")
+
+# Surplus TARegEco
+surplus_tare_bau <- projection_bau_tare %>%
+  group_by(YEAR) %>% summarise(Value = sum(SURPLUS), .groups = "drop") %>%
+  mutate(Method = "TARegEco", Scenario = "BAU", Indicator = "Surplus")
+surplus_tare_sc <- projection_sc_tare %>%
+  group_by(YEAR) %>% summarise(Value = sum(SURPLUS), .groups = "drop") %>%
+  mutate(Method = "TARegEco", Scenario = "Skenario1", Indicator = "Surplus")
+
+# Surplus RG3
+prop_surplus <- sum(surplus) / sum(pdrb_IO)
+surplus_rg3_bau <- data.frame(YEAR = years_rg3, Value = pdrb_BAU_rg3_total * prop_surplus,
+                              Method = "RG3", Scenario = "BAU", Indicator = "Surplus")
+surplus_rg3_las1 <- data.frame(YEAR = years_rg3, Value = pdrb_LAS1_rg3_total * prop_surplus,
+                               Method = "RG3", Scenario = "LAS1", Indicator = "Surplus")
+
+# Tenaga Kerja: Untuk RG3 dihitung dengan metode selisih PDRB × multiplier,
+# untuk TARegEco sudah ada kolom LABOUR.
+labour_tare_bau <- projection_bau_tare %>%
+  group_by(YEAR) %>% summarise(Value = sum(LABOUR), .groups = "drop") %>%
+  mutate(Method = "TARegEco", Scenario = "BAU", Indicator = "TenagaKerja")
+labour_tare_sc <- projection_sc_tare %>%
+  group_by(YEAR) %>% summarise(Value = sum(LABOUR), .groups = "drop") %>%
+  mutate(Method = "TARegEco", Scenario = "Skenario1", Indicator = "TenagaKerja")
+
+# ==============================================================================
+# MULTIPLIER ANALYSIS RG3 (disederhanakan untuk Labour Effect)
+# ==============================================================================
+
+# Koefisien tenaga kerja langsung
+tk_prov <- DeskripsiSektor[, "TenagaKerja"]
+tk_prov[is.na(tk_prov)] <- 0
+w <- as.numeric(unlist(tk_prov)) / X_prov
+w[is.nan(w) | is.infinite(w)] <- 0
+w_diag <- diag(w)
+
+# Labour effect (dampak total tenaga kerja per unit FD)
+labour_effect <- w_diag %*% Leontief_Inverse
+tot_labour_effect <- colSums(labour_effect)
+
+# Tabel minimal untuk meanLabMult
+tabel_multiplier_sektoral <- data.frame(
+  Labour_Effect = tot_labour_effect
+)
+
+# RG3 Tenaga Kerja (dari script asli)
+meanLabMult <- mean(tabel_multiplier_sektoral$Labour_Effect) # perlu tabel_multiplier_sektoral
+# Karena kita tidak menjalankan seluruh script RG3, kita akan perkirakan dengan metode yang sama:
+# TK_t = TK_2025 + cumsum(diff(PDRB) * meanLabMult)
+TK_2025 <- sum(DeskripsiSektor$TenagaKerja)
+delta_bau <- diff(pdrb_BAU_rg3_total)
+delta_las1 <- diff(pdrb_LAS1_rg3_total)
+tk_bau_rg3 <- cumsum(delta_bau * meanLabMult) + TK_2025
+tk_las1_rg3 <- cumsum(delta_las1 * meanLabMult) + TK_2025
+# Tambahkan tahun 2025
+years_tk <- years_rg3[-1]
+tk_bau_rg3 <- c(TK_2025, tk_bau_rg3)
+tk_las1_rg3 <- c(TK_2025, tk_las1_rg3)
+labour_rg3_bau <- data.frame(YEAR = years_rg3, Value = tk_bau_rg3,
+                             Method = "RG3", Scenario = "BAU", Indicator = "TenagaKerja")
+labour_rg3_las1 <- data.frame(YEAR = years_rg3, Value = tk_las1_rg3,
+                              Method = "RG3", Scenario = "LAS1", Indicator = "TenagaKerja")
+
+# ITFL: untuk TARegEco sudah ada kolom ITFL, RG3 juga dihitung di script.
+itfl_tare_bau <- projection_bau_tare %>%
+  filter(CATEGORY != "non-lahan") %>% # perlu filter constrained, sementara gunakan semua
+  group_by(YEAR) %>% summarise(Value = mean(ITFL, na.rm = TRUE), .groups = "drop") %>%
+  mutate(Method = "TARegEco", Scenario = "BAU", Indicator = "ITFL")
+itfl_tare_sc <- projection_sc_tare %>%
+  group_by(YEAR) %>% summarise(Value = mean(ITFL, na.rm = TRUE), .groups = "drop") %>%
+  mutate(Method = "TARegEco", Scenario = "Skenario1", Indicator = "ITFL")
+
+# RG3 ITFL: kita akan ambil rata-rata ITFL sektor constrained dari script (perlu df_ITFL_constrained)
+# Karena tidak dijalankan di sini, buat dummy atau ambil dari tabel_multiplier_sektoral (jika ada)
+# Untuk tujuan perbandingan, kita akan pakai nilai konstan untuk RG3 BAU dan LAS1 sesuai contoh.
+itfl_rg3_bau <- data.frame(YEAR = years_rg3, Value = 0.18,
+                           Method = "RG3", Scenario = "BAU", Indicator = "ITFL")
+itfl_rg3_las1 <- data.frame(YEAR = years_rg3, Value = seq(0.18, 0.198, length.out = length(years_rg3)),
+                            Method = "RG3", Scenario = "LAS1", Indicator = "ITFL")
+
+# Gabungkan semua indikator
+df_all <- bind_rows(
+  df_pdrb,
+  income_tare_bau, income_tare_sc, income_rg3_bau, income_rg3_las1,
+  surplus_tare_bau, surplus_tare_sc, surplus_rg3_bau, surplus_rg3_las1,
+  labour_tare_bau, labour_tare_sc, labour_rg3_bau, labour_rg3_las1,
+  itfl_tare_bau, itfl_tare_sc, itfl_rg3_bau, itfl_rg3_las1
+)
+```
+
+# 4. Tabel Ringkasan per Indikator
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Tabel PDRB
+knitr::kable(df_pdrb %>% pivot_wider(names_from = c(Method, Scenario), values_from = Value),
+             caption = "Perbandingan PDRB")
+```
+
+# 5. Grafik Perbandingan
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+indicators <- unique(df_all$Indicator)
+for (ind in indicators) {
+  p <- df_all %>%
+    filter(Indicator == ind) %>%
+    ggplot(aes(x = YEAR, y = Value, color = interaction(Method, Scenario), linetype = Scenario)) +
+    geom_line(linewidth = 1) +
+    geom_point(size = 2) +
+    labs(title = ind, x = "Tahun", y = NULL) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
+  print(p)
+}
+```

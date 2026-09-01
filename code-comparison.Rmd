@@ -1,0 +1,439 @@
+---
+title: "Core Analysis Comparison: TARegEco vs RG3"
+author: "LUMENS Developer Team"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# Pendahuluan
+
+Dokumen ini menyajikan perbandingan antara dua pendekatan dalam menghitung proyeksi ekonomi regional berbasis Input-Output:
+
+1.  **Modul Proyeksi TARegEco** — fungsi `run_projection()` yang saat ini digunakan.
+
+2.  **Script RG3 (RegEco – Jawa Tengah)**
+
+Tujuan dokumen ini adalah untuk mendokumentasikan perbedaan formulasi, sehingga tim dapat memahami implikasi dari setiap pilihan pendekatan. Tidak ada penilaian benar/salah; setiap pendekatan memiliki asumsi dan konteks yang berbeda.
+
+## 1. Final Demand Sektor Non-Lahan (Unconstrained)
+
+## 1.1 TARegEco (`run_projection()`)
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+# Growth factor tunggal per 5 tahun
+growth_factor <- (1 + r)^time_step
+
+# Di dalam loop per tahun:
+fd_t <- land_req_t * current_prop_fd * current_lpc * growth_factor
+fd_t[is.na(fd_t)] <- 0
+```
+
+**Karakteristik:**
+
+- `fd_t` dihitung sebagai hasil dari kebutuhan lahan (`land_req_t`), proporsi FD (`current_prop_fd`), produktivitas lahan (`current_lpc`), dan `growth_factor`.
+
+- `growth_factor` sama untuk semua sektor dan tidak membedakan sektor berbasis lahan atau bukan.
+
+- `current_prop_fd` dan `current_lpc` diperbarui pada akhir setiap iterasi.
+
+### 1.2 Script RG3
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+# Ekstrak vector rerata pertumbuhan sektor unconstrained
+rate <- DeskripsiSektor$RateUnconstrained
+
+# Loop untuk menghitung FD unconstrained per tahun
+current_val <- fd
+for (i in 1:20) {
+  current_val <- ((current_val * rate) + current_val) * Unconstrained
+  all_steps[, i] <- current_val
+}# RG3
+for (i in 1:20) {
+  current_val <- ((current_val * rate) + current_val) * Unconstrained
+  all_steps[, i] <- current_val
+}
+```
+
+**Karakteristik:**
+
+- FD unconstrained dihitung terpisah menggunakan `RateUnconstrained`, yang bernilai 0 untuk sektor berbasis lahan.
+
+- Pertumbuhan dilakukan secara **majemuk tahunan** (`current_val * rate + current_val`).
+
+- Ada vektor `Unconstrained` (1 untuk sektor non-lahan, 0 untuk sektor lahan) yang memastikan hanya sektor non-lahan yang tumbuh.
+
+- Nilai FD unconstrained awal adalah `fd * Unconstrained`.
+
+## Perbedaan Utama
+
+| Aspek             | TARegEco         | RG3                   |
+|:------------------|:-----------------|:----------------------|
+| Pemisahan sektor  | Tidak ada        | Ada (`Unconstrained`) |
+| Growth factor     | Flat per 5 tahun | Majemuk tahunan       |
+| Basis perhitungan | Land requirement | FD baseline           |
+
+## 2. Final Demand Sektor Berbasis Lahan (Constrained)
+
+## 2.1 TARegEco (`run_projection()`)
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+# Land requirement
+area_t <- area_matrix[, as.character(year)]
+land_req_t <- P %*% area_t
+
+# FD (menggabungkan constrained & unconstrained)
+fd_t <- land_req_t * current_prop_fd * current_lpc * growth_factor
+```
+
+- **Karakteristik:**
+
+  - `land_req_t` dihitung dari `P %*% area_t` dan digunakan untuk semua sektor.
+
+  - Tidak ada pemisahan antara sektor lahan dan non-lahan.
+
+  - `current_lpc` yang digunakan bisa berubah setiap iterasi (di-update di akhir loop).
+
+## 2.2 Script RG3
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+# Loop untuk menghitung FD constrained
+for (i in 1:ncol(BAUArea)) {
+  r_sums <- as.vector(LDM_matrix %*% BAUArea[, i])
+  fd_con <- r_sums * LPC * Constrained
+}
+```
+
+**Karakteristik:**
+
+- FD constrained dihitung dari `LDM_matrix %*% Area` (luas lahan yang dialokasikan ke tiap sektor) × `LPC` × `Constrained`.
+
+- `LPC` diperlakukan **konstan** dari baseline, kecuali pada skenario tertentu yang secara eksplisit mengubahnya.
+
+- `Constrained` adalah vektor 0/1 untuk menandai sektor berbasis lahan.
+
+## Perbedaan Utama
+
+| Aspek | TARegEco | RG3 |
+|:---|:---|:---|
+| Pemisahan constrained/unconstrained | Tidak ada | Ada |
+| LPC | Berubah tiap iterasi | Konstan (baseline) |
+| Pengali proporsi FD | Ada (`current_prop_fd`) | Tidak ada |
+| Faktor `Constrained` | Tidak ada | Ada |
+
+# 3. Total Final Demand dan Output
+
+## 3.1 TARegEco (`run_projection()`)
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+fd_t <- land_req_t * current_prop_fd * current_lpc * growth_factor
+
+# Intensitas implementasi
+intensity_vec <- sapply(seq_along(fd_t), function(s) {
+  get_intensity(intensity_table, gdp_baseline$Sector_Code[s], p_start, p_end)
+})
+
+fd_baseline <- as.numeric(gdp_baseline$FD)
+fd_effective <- fd_baseline + intensity_vec * (fd_t - fd_baseline)
+
+# Output
+output_t <- current_leontief %*% matrix(fd_effective)
+```
+
+**Karakteristik:**
+
+- FD total adalah `fd_t` yang sudah termasuk semua sektor.
+
+- Ada mekanisme `intensity_vec` yang mencampur baseline dan skenario.
+
+- Output dihitung dari `current_leontief` (bisa berubah jika ada `io_changes`).
+
+## 3.2 Script RG3
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+fd_total <- fd_con + fd_uncon
+
+# Output
+output_t <- Leontief_Inverse %*% fd_total
+
+```
+
+**Karakteristik:**
+
+- FD total adalah penjumlahan terpisah antara `fd_con` dan `fd_uncon`.
+
+- Tidak ada mekanisme intensitas bertahap; perbedaan skenario berasal dari perubahan luas lahan atau matriks Leontief.
+
+- Leontief inverse dapat berubah untuk skenario tertentu (mis. hilirisasi) dan dihitung ulang.
+
+## Perbedaan Utama
+
+| Aspek            | TARegEco                  | RG3                   |
+|:-----------------|:--------------------------|:----------------------|
+| Struktur FD      | Satu matriks campuran     | Dua komponen terpisah |
+| Intensitas       | Ada (`intensity_vec`)     | Tidak ada             |
+| Leontief berubah | Bisa (`apply_io_changes`) | Bisa (`Z_sim_list`)   |
+
+# 4. PDRB
+
+## 4.1 TARegEco (`run_projection()`)
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+gdp_t <- output_t * gdp_prop
+```
+
+## 4.2 Script RG3
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+PDRB_t <- output_t * ntbProp
+```
+
+**Keterangan:**\
+Keduanya menghitung PDRB/NTB sebagai **output × proporsi NTB terhadap output**. Nama variabel berbeda (`gdp_prop` vs `ntbProp`), tetapi konsepnya setara.
+
+# 5. Pendapatan Tenaga Kerja, Tenaga Kerja, dan Surplus Usaha
+
+## 5.1 TARegEco (`run_projection()` lama)
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+# Income
+projected_compensation <- income_coeff * output_baseline
+prop_compensation <- labour_compensation / projected_compensation
+income_t <- output_t * income_coeff * prop_compensation
+
+# Labour
+add <- (output_t / prop_labour) * labour_coeff
+labour_t <- current_labour + add
+
+# Surplus
+projected_SUB <- sub_coeff * output_baseline
+prop_SUB <- surplus_baseline / projected_SUB
+surplus_t <- output_t * sub_coeff * prop_SUB
+```
+
+**Karakteristik:**
+
+- Income dan surplus dihitung menggunakan **koefisien per sektor** dari multiplier, dikalikan dengan output.
+
+- Tenaga kerja dihitung sebagai nilai baseline ditambah perubahan output dibagi produktivitas tenaga kerja.
+
+## 5.2 Script RG3
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+# Income
+proporsi_upah <- sum(upah_gaji) / sum(pdrb_IO)
+income_t <- PDRB_t * proporsi_upah
+
+# Labour (dari selisih PDRB × Labour Effect)
+meanLabMult <- mean(Labour_Effect)
+delta_pdrb <- diff(PDRB_t)
+TK_t <- TK_2025 + cumsum(delta_pdrb * meanLabMult)
+
+# Surplus
+propSurplus <- sum(surplus) / sum(pdrb_IO)
+surplus_t <- PDRB_t * propSurplus
+```
+
+**Karakteristik:**
+
+- Income dan surplus menggunakan **proporsi global** (upah/PDRB, surplus/PDRB), bukan per sektor.
+
+- Tenaga kerja dihitung dari **selisih PDRB tahunan** dikali rata-rata labour multiplier, lalu diakumulasikan dari nilai awal.
+
+## Perbedaan Utama
+
+| Aspek                | TARegEco           | RG3                             |
+|:--------------------|:-------------------|:------------------------------|
+| Basis income/surplus | Koefisien sektoral | Proporsi global                 |
+| Basis tenaga kerja   | Output per sektor  | Selisih PDRB total × multiplier |
+
+# 6. Keterkaitan Antar Sektor (Linkage)
+
+## 6.1 TARegEco (`run_projection()`)
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+itfl_t <- itfl_coeff * (land_req_t / gdp_baseline$Land_Requirement)
+itbl_t <- itbl_coeff * (land_req_t / gdp_baseline$Land_Requirement)
+```
+
+**Karakteristik:**
+
+- ITFL/ITBL dihitung ulang berdasarkan perubahan kebutuhan lahan relatif terhadap baseline.
+
+- Tidak ada perhitungan ulang matriks Leontief untuk linkage kecuali ada `io_changes`.
+
+## 6.2 Script RG3
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+itfl_t <- itfl_coeff * (land_req_t / gdp_baseline$Land_Requirement)
+itbl_t <- itbl_coeff * (land_req_t / gdp_baseline$Land_Requirement)
+```
+
+**Karakteristik:**
+
+- ITFL dihitung langsung dari **Leontief inverse** yang mungkin berubah setiap tahun.
+
+- Untuk analisis sektor SDA, ITFL dikalikan dengan `v_constrained` agar hanya sektor lahan yang dihitung.
+
+## Perbedaan Utama
+
+| Aspek              | TARegEco               | RG3                   |
+|:-------------------|:-----------------------|:----------------------|
+| Sumber linkage     | Land requirement ratio | Leontief inverse      |
+| Filter constrained | Tidak ada              | Ada (`v_constrained`) |
+
+# 7. Tabel Ringkasan Perbedaan Utama
+
+| Aspek | TARegEco (`run_projection()`) | RG3 |
+|:-----------------------|:-----------------------|:-----------------------|
+| Struktur FD | Campuran, tidak terpisah | Terpisah: constrained & unconstrained |
+| Pertumbuhan non-lahan | Tidak eksplisit | Majemuk tahunan |
+| LPC | Di-update tiap iterasi | Konstan (kecuali skenario tertentu) |
+| Proporsi FD | Digunakan dalam perhitungan | Tidak digunakan untuk FD constrained |
+| Intensitas implementasi | Ada | Tidak ada |
+| Income/surplus | Koefisien sektoral | Proporsi global |
+| Tenaga kerja | Per sektor | Selisih PDRB × multiplier |
+| Linkage | Berdasarkan perubahan lahan | Berdasarkan Leontief |
+
+# Lampiran: Kode `run_projection()` TARegEco Lengkap
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+run_projection <- function(
+    gdp_baseline,
+    income_multiplier,
+    labour_multiplier,
+    SUB_multiplier,
+    output_multiplier,
+    linkage_table,
+    leontief_matrix,
+    full_io_table,
+    sector_idx,
+    P,
+    area_matrix,
+    growth_rate,
+    lpc_scenario = NULL,
+    io_changes = NULL,
+    intensity_table = NULL
+) {
+  years <- as.numeric(colnames(area_matrix))
+  years <- sort(years)
+  
+  if (length(years) > 1) {
+    time_step <- years[2] - years[1]
+  }
+  
+  periods_df <- create_period_table(
+    initial_year = years[1] - time_step,
+    end_year = years[length(years)],
+    time_step = time_step
+  )
+  
+  current_prop_fd   <- as.numeric(gdp_baseline$Prop_FD)
+  current_lpc       <- as.numeric(gdp_baseline$LPC)
+  output_baseline   <- as.numeric(gdp_baseline$OUTPUT)
+  gdp_prop          <- as.numeric(gdp_baseline$GDP_PROP)
+  income_coeff      <- as.numeric(income_multiplier$Inc.multiplier)
+  labour_coeff      <- as.numeric(labour_multiplier$Lab.multiplier)
+  labour_compensation <- as.numeric(labour_multiplier$Labour_Compensation)
+  labour_baseline   <- as.numeric(labour_multiplier$Labour)
+  sub_coeff         <- as.numeric(SUB_multiplier$SUB.multiplier)
+  surplus_baseline  <- as.numeric(SUB_multiplier$Surplus)
+  output_coeff      <- as.numeric(output_multiplier$Out.multiplier)
+  itfl_coeff        <- linkage_table$ITFL
+  itbl_coeff        <- linkage_table$ITBL
+  
+  if (!is.null(growth_rate) && length(growth_rate) > 0) {
+    r <- as.numeric(growth_rate)
+  } else {
+    r <- rep(0.03, nrow(gdp_baseline))
+  }
+  
+  current_labour <- labour_baseline
+  prop_labour <- output_baseline / labour_baseline
+  prop_labour[!is.finite(prop_labour)] <- 0
+  growth_factor <- (1 + r)^time_step
+  
+  previous_output <- output_baseline
+  current_leontief <- leontief_matrix
+  current_io_table <- full_io_table
+  
+  results <- list()
+  
+  for (yr_idx in seq_along(years)) {
+    year <- years[yr_idx]
+    period_row <- periods_df[periods_df$End_Year == year, ]
+    if (nrow(period_row) == 0) next
+    p_start <- period_row$Start_Year
+    p_end   <- period_row$End_Year
+    
+    current_io_table <- apply_io_changes(current_io_table, io_changes, p_start, p_end)
+    current_leontief <- recalculate_leontief(current_io_table, sector_idx, output_baseline)
+    
+    area_t <- area_matrix[, as.character(year), drop = FALSE]
+    if (ncol(P) == length(area_t)) {
+      land_req_t <- as.numeric(P %*% area_t)
+    } else {
+      stop("Dimensi P tidak cocok dengan area_t")
+    }
+    land_req_t[!is.finite(land_req_t) | land_req_t <= 0] <- 0
+    
+    lpc_gr_vec <- rep(0, length(current_lpc))
+    if (!is.null(lpc_scenario)) {
+      for (s in seq_along(current_lpc)) {
+        sector_code <- gdp_baseline$Sector_Code[s]
+        lpc_gr <- calculate_lpc_growth_rate(lpc_scenario, sector_code, yr_idx, periods_df)
+        lpc_gr_vec[s] <- lpc_gr
+        current_lpc[s] <- current_lpc[s] + (current_lpc[s] * lpc_gr)
+      }
+    }
+    current_lpc[!is.finite(current_lpc)] <- 0
+    
+    fd_t <- land_req_t * current_prop_fd * current_lpc * growth_factor
+    fd_t[is.na(fd_t)] <- 0
+    
+    intensity_vec <- sapply(seq_along(fd_t), function(s) {
+      get_intensity(intensity_table, gdp_baseline$Sector_Code[s], p_start, p_end)
+    })
+    
+    fd_baseline <- as.numeric(gdp_baseline$FD)
+    fd_effective <- fd_baseline + intensity_vec * (fd_t - fd_baseline)
+    fd_effective[fd_effective < 0] <- 0
+    
+    output_t <- as.numeric(current_leontief %*% matrix(fd_effective))
+    gdp_t <- output_t * gdp_prop
+    
+    income_t <- output_t * income_coeff * (labour_compensation / (income_coeff * output_baseline))
+    add <- (output_t / prop_labour) * labour_coeff
+    labour_t <- current_labour + add
+    surplus_t <- output_t * sub_coeff * (surplus_baseline / (sub_coeff * output_baseline))
+    
+    itfl_t <- itfl_coeff * (land_req_t / gdp_baseline$Land_Requirement)
+    itbl_t <- itbl_coeff * (land_req_t / gdp_baseline$Land_Requirement)
+    
+    prop_fd_t <- fd_t / output_t
+    lpc_t <- output_t / land_req_t
+    
+    current_prop_fd <- prop_fd_t
+    current_lpc <- lpc_t
+    previous_output <- output_t
+    current_labour <- labour_t
+    
+    results[[as.character(year)]] <- data.frame(
+      YEAR = year, SECTOR = gdp_baseline$SECTOR, CATEGORY = gdp_baseline$CATEGORY,
+      LAND_REQUIREMENT = land_req_t, LPC_GROWTH_RATE = lpc_gr_vec, LPC = lpc_t,
+      FD = fd_t, FD_EFFECTIVE = fd_effective, INTENSITY = intensity_vec,
+      PROP_FD = prop_fd_t, OUTPUT = output_t, GDP = gdp_t, INCOME = income_t,
+      LABOUR = labour_t, SURPLUS = surplus_t, OUTPUT_MULTIPLIER = output_multiplier_t,
+      ITFL = itfl_t, ITBL = itbl_t
+    )
+  }
+  
+  final_result <- do.call(rbind, results)
+  final_result <- final_result |>
+    dplyr::mutate(dplyr::across(where(is.numeric), ~ ifelse(!is.finite(.x), 0, .x)))
+  return(final_result)
+}
+```
