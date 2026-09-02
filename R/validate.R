@@ -37,11 +37,13 @@ find_row_alias <- function(data, aliases) {
 #'   containing labour per sector.
 #' @param land_proportion A numeric matrix of land proportion
 #'   (Sector x Land Cover Class).
-#' @param landuse_table A data frame or tibble with at least columns
+#' @param landuse_table Optional data frame or tibble with at least columns
 #'   "LC" (land cover name) and "area" (hectares). Number of rows must
-#'   equal the number of columns of `land_proportion`.
-#' @param growth_rate A numeric vector of length `n_sec` containing
-#'   sectoral growth rates (in decimal, e.g., 0.02 for 2%).
+#'   equal the number of columns of `land_proportion`. If `NULL` (default),
+#'   the land use checks are reported as `SKIP` and not run.
+#' @param growth_rate Optional numeric vector of length `n_sec` containing
+#'   sectoral growth rates (in decimal, e.g., 0.02 for 2%). If `NULL`
+#'   (default), the growth rate checks are reported as `SKIP` and not run.
 #' @param tolerance_io Numeric; maximum allowed absolute relative difference
 #'   for the IO identity. Default 0.01 (1%).
 #' @param stop_on_fail Logical; if `TRUE` (default), stops on any `FAIL`.
@@ -54,8 +56,8 @@ validate_io_data <- function(sector,
                              added_value,
                              labour,
                              land_proportion,
-                             landuse_table,
-                             growth_rate,
+                             landuse_table = NULL,
+                             growth_rate = NULL,
                              tolerance_io = 0.01,
                              stop_on_fail = TRUE) {
   
@@ -335,7 +337,10 @@ validate_io_data <- function(sector,
   # G. Landuse table --------------------------------------------------------
   n_lc <- ncol(land_proportion) 
   
-  if (!is.data.frame(landuse_table)) {
+  if (is.null(landuse_table)) {
+    add_check("landuse_table", "Supplied", "SKIP",
+              "Not supplied; land use checks skipped.")
+  } else if (!is.data.frame(landuse_table)) {
     add_check("landuse_table", "Is a data frame", "FAIL", "Not a data frame/tibble.")
   } else if (ncol(landuse_table) < 2) {
     add_check("landuse_table", "Has at least 2 columns (LC, area)", "FAIL",
@@ -412,7 +417,10 @@ validate_io_data <- function(sector,
   }
   
   # H. Growth rate ----------------------------------------------------------
-  if (!is.numeric(growth_rate)) {
+  if (is.null(growth_rate)) {
+    add_check("growth_rate", "Supplied", "SKIP",
+              "Not supplied; growth rate checks skipped.")
+  } else if (!is.numeric(growth_rate)) {
     add_check("growth_rate", "Is numeric", "FAIL",
               paste("Type:", class(growth_rate)[1]))
   } else if (length(growth_rate) != n_sec) {
