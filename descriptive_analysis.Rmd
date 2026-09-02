@@ -1,6 +1,7 @@
 ---
 title: "TA Regional Economy Module - Descriptive Analysis Notebook"
-author: "LUMENS Developer Team"
+author: "Yumna Karimah"
+date: "`r Sys.Date()`"
 output:
   html_document: default
   word_document: default
@@ -32,10 +33,6 @@ source_files <- list.files("R", pattern = "\\.R$", full.names = TRUE)
 invisible(lapply(source_files, source))
 ```
 
-Tanggal render: `r Sys.Date()`
-
-Waktu render: `r format(Sys.time(), '%H:%M:%S')`
-
 # Pendahuluan
 
 Dokumen ini adalah notebook R Markdown berjudul "Trade-off Analysis (TA) Ekonomi Regional". Notebook ini akan dihasilkan dan mencakup baik konten maupun output yang terdapat dalam dokumen.
@@ -48,148 +45,232 @@ Dokumen ini adalah notebook R Markdown berjudul "Trade-off Analysis (TA) Ekonomi
 6.  [Kontribusi PDRB per Sektor](#kontribusi-pdrb-per-sektor)
 7.  [Tabel Multiplier per Sektor](#tabel-multiplier-per-sektor)
 
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
+```{r read-data, echo=FALSE, message=FALSE, warning=FALSE}
 # =====================================================
 # INPUT
 # =====================================================
-io_file_path <- "inst/extdata/example_data/Bukecap/Input_IO_template_BUKECAP.xlsx"
+io_file_path <- "inst/extdata/example_data/Bukecap/Input_IO_template_BUKECAP.xlsx" 
 landuse_table_file_path <- "inst/extdata/example_data/Bukecap/Input_penutup_lahan_template_BUKECAP.xlsx"
-
-# =====================================================
-# Input: PADAGIMO (uncomment line di bawah ini jika yang dijalankan PADGIMO)
-# io_file_path <- "inst/extdata/example_data/Padagimo/Input_IO_template_PADAGIMO.xlsx" 
-# landuse_table_file_path <- "inst/extdata/example_data/Padagimo/Input_penutup_lahan_template_PADAGIMO.xlsx"
-# =====================================================
-
+preprocessing_rds <- "inst/extdata/output/descriptive_input_preprocessing.rds"
 output_dir <- "inst/extdata/output/"
+load_rds <- FALSE
+new_lc_area <- FALSE
 
 # =====================================================
 # PREPROCESSING & VALIDATION
 # =====================================================
-# Read inputs
-sektor_ekonomi <- read_input_file(
-  io_file_path, sheet = "1. Sektor Ekonomi", skip = 2,  header = TRUE
-  )
-permintaan_antara <- read_input_file(
-  io_file_path, sheet = "2. Permintaan Antara", skip = 8, as_matrix = TRUE, header = TRUE
-  )
-permintaan_akhir <- read_input_file(
-  io_file_path, sheet = "3. Permintaan Akhir", skip = 3,  header = TRUE
-  )
-input_primer <- read_input_file(
-  io_file_path, sheet = "4. Input Primer", skip = 2,  header = TRUE
-  )
-tenaga_kerja <- read_input_file(
-  io_file_path, sheet = "5. Tenaga Kerja", skip = 2,  header = TRUE
-  )
-proposi_lahan <- read_input_file(
-  io_file_path, sheet = "6. Proposi Lahan", skip = 8, as_matrix = TRUE, header = TRUE
-  )
-laju_pertumbuhan <- read_input_file(
-  io_file_path, sheet = "7. Laju Pertumbuhan PDRB", skip = 2,  header = TRUE
-  )
-luas_area <- read_input_file(
-  landuse_table_file_path, skip = 2, header = TRUE
-  )
 
-# Prepare sectors
-sector <- sektor_ekonomi %>% select(2:4)
-colnames(sector)[2:4] <- c("Nama_Sektor", "Kategori", "Berbasis_Lahan")
+# Conditional data preparation
+if (!load_rds) {
+  # Read inputs
+  profil_io <- read_input_file(io_file_path, sheet = "0. Profil Data", skip = 2,  header = TRUE)
+  sektor_ekonomi <- read_input_file(io_file_path, sheet = "1. Sektor Ekonomi", skip = 2,  header = TRUE)
+  permintaan_antara <- read_input_file(io_file_path, sheet = "2. Permintaan Antara", skip = 8, as_matrix = TRUE, header = TRUE)
+  permintaan_akhir <- read_input_file(io_file_path, sheet = "3. Permintaan Akhir", skip = 3,  header = TRUE)
+  input_primer <- read_input_file(io_file_path, sheet = "4. Input Primer", skip = 2,  header = TRUE)
+  tenaga_kerja <- read_input_file(io_file_path, sheet = "5. Tenaga Kerja", skip = 2,  header = TRUE)
+  proposi_lahan <- read_input_file(io_file_path, sheet = "6. Proposi Lahan", skip = 9, as_matrix = TRUE, header = TRUE)
+  laju_pertumbuhan <- read_input_file(io_file_path, sheet = "7. Laju Pertumbuhan PDRB", skip = 2,  header = TRUE)
+  luas_area <- read_input_file(landuse_table_file_path, skip = 2, header = TRUE)
+} else {
+  # Reload from RDS
+  input_preprocessing <- readRDS(preprocessing_rds)
+  print(paste0("Using loaded preprocessing RDS file, generated on ", input_preprocessing$metadata$timestamp))
+  
+  if (new_lc_area) {
+    luas_area <- read_input_file(landuse_table_file_path, skip = 2, header = TRUE)
+  }
+}
+```
 
-# Prepare intermediate consumption
-intermediate_consumption.m <- matrix(
-  as.numeric(permintaan_antara[, -1]),
-  nrow = nrow(permintaan_antara),
-  ncol = ncol(permintaan_antara) - 1
+```{r prepare-data, echo=FALSE, message=FALSE, warning=FALSE}
+# Prepare data
+if (!load_rds) {
+  # Prepare profile information
+  profile <- list(
+    area_name = trimws(profil_io$Deskripsi[1]),
+    year      = as.numeric(profil_io$Deskripsi[2]),
+    currency  = trimws(profil_io$Deskripsi[3]),
+    io_source = trimws(profil_io$Deskripsi[4])
+  )
+  
+  # Prepare sectors
+  sector <- sektor_ekonomi %>%
+    select(2:4) %>%
+    setNames(c("Nama_Sektor", "Kategori", "Berbasis_Lahan")) %>%
+    filter(complete.cases(.))  
+  
+  # Prepare intermediate consumption
+  permintaan_antara <- permintaan_antara[
+    rowSums(is.na(permintaan_antara)) != ncol(permintaan_antara),
+    colSums(is.na(permintaan_antara)) != nrow(permintaan_antara)
+  ]
+  
+  # Convert to numeric matrix
+  intermediate_consumption.m <- matrix(
+    as.numeric(permintaan_antara[, -1]),
+    nrow = nrow(permintaan_antara),
+    ncol = ncol(permintaan_antara) - 1
+  )
+  
+  # Prepare final demand
+  final_demand.m <- permintaan_akhir %>%
+    filter(rowSums(is.na(select(., -`Sektor Ekonomi`))) < ncol(select(., -`Sektor Ekonomi`))) %>%
+    column_to_rownames(var = "Sektor Ekonomi") %>%
+    as.matrix()
+  
+  final_demand_component <- tibble(
+    ID = seq_along(colnames(permintaan_akhir)[-1]) + 300,
+    Nama_Komponen = colnames(permintaan_akhir)[-1]
+  )
+  
+  # Prepare added value
+  added_value.m <- input_primer %>%
+    select(-ID) %>%                                  
+    select(where(~ !all(is.na(.)))) %>%            
+    filter(rowSums(is.na(select(., -`Sektor Ekonomi`))) < 
+             ncol(select(., -`Sektor Ekonomi`))) %>%  
+    column_to_rownames(var = "Sektor Ekonomi") %>%
+    as.matrix()
+  
+  added_value_lookup <- input_primer %>%
+    select(1:2)
+  
+  # Prepare labour
+  labour <- tenaga_kerja$`Tenaga Kerja (Jiwa)`
+  labour <- labour[!is.na(labour)]
+  
+  # Prepare land proportion
+  land_proportion <- apply(proposi_lahan[, -1], 2, as.numeric)
+  land_proportion <- land_proportion[!apply(is.na(land_proportion), 1, all), , drop = FALSE]
+  land_proportion <- land_proportion[, !apply(is.na(land_proportion), 2, all), drop = FALSE]
+  dimnames(land_proportion) <- NULL
+  
+  # Prepare landuse table
+  landuse_table <- luas_area
+  colnames(landuse_table)[1:3] <- c("ID", "LC", "area")
+  
+  # Prepare growth rate
+  growth_rate <- laju_pertumbuhan %>% 
+    pull(`Laju Pertumbuhan`)
+  growth_rate <- growth_rate[!is.na(growth_rate)]
+  
+  # Build Full IO Table & Code Registry
+  full_io_result <- build_full_io_table(
+    sector = sector,
+    intermediate_consumption_m = intermediate_consumption.m,
+    final_demand_m = final_demand.m,
+    final_demand_component = final_demand_component,
+    added_value_m = added_value.m,
+    added_value_lookup = added_value_lookup
+  )
+  
+  full_io_table <- full_io_result$full_io_table
+  code_registry <- full_io_result$code_registry
+} else {
+  if (new_lc_area) {
+    # Prepare landuse table
+    landuse_table <- luas_area
+    colnames(landuse_table)[1:3] <- c("ID", "LC", "area")
+    input_preprocessing$landuse_table <- landuse_table
+  }
+  
+  # Assign components
+  profile                    <- input_preprocessing$io$profile
+  sector                     <- input_preprocessing$io$sector
+  intermediate_consumption.m <- input_preprocessing$io$intermediate_consumption
+  final_demand.m             <- input_preprocessing$io$final_demand
+  final_demand_component     <- input_preprocessing$io$final_demand_component
+  added_value.m              <- input_preprocessing$io$added_value
+  added_value_lookup         <- input_preprocessing$io$added_value_lookup
+  labour                     <- input_preprocessing$labour
+  land_proportion            <- input_preprocessing$land_proportion
+  landuse_table              <- input_preprocessing$landuse_table
+  growth_rate                <- input_preprocessing$growth_rate
+  full_io_table              <- input_preprocessing$io$full_io_table
+  code_registry              <- input_preprocessing$io$code_registry
+}
+```
+
+```{r create-validation-status, echo=FALSE, message=FALSE, warning=FALSE}
+# Validate input
+validation_status <- validate_io_data(
+  sector, 
+  intermediate_consumption.m, 
+  final_demand.m, 
+  added_value.m, 
+  labour, 
+  land_proportion, 
+  landuse_table, 
+  growth_rate, 
+  tolerance_io = 0.01, 
+  stop_on_fail = TRUE
 )
+  
+print(validation_status, n=50)
+```
 
-# Prepare final demand
-final_demand.m <- permintaan_akhir %>%
-  column_to_rownames(var = "Sektor Ekonomi") %>%
-  as.matrix()
-
-final_demand_component <- tibble(
-  ID = seq_along(colnames(permintaan_akhir)[-1]) + 300,
-  Nama_Komponen = colnames(permintaan_akhir)[-1]
+```{r get-metadata, echo=FALSE, message=FALSE, warning=FALSE}
+# Get metadata
+io_metadata <- get_io_metadata(
+    sector = sector,
+    intermediate_consumption = intermediate_consumption.m,
+    final_demand = final_demand.m,
+    added_value = added_value.m,
+    labour = labour,
+    land_proportion = land_proportion,
+    landuse_table = landuse_table,
+    growth_rate = growth_rate,
+    sector_units = "Unitless",
+    ic_units = profile$currency,
+    fd_units = profile$currency,
+    av_units = profile$currency,
+    labour_units = "Jiwa",
+    lp_units = "Unitless",
+    lu_units = "Hektar",
+    gr_units = "Persentase"
 )
+  
+# Add timestamp
+timestamp <- Sys.time()
+io_metadata$timestamp <- timestamp
 
-# Prepare added value
-added_value.m <- input_primer %>%
-  select(-ID) %>%
-  column_to_rownames(var = "Sektor Ekonomi") %>%
-  as.matrix()
+print(io_metadata$metadata)
+```
 
-added_value_lookup <- input_primer %>%
-  select(1:2)
-
-# Prepare labour
-labour <- tenaga_kerja$`Tenaga Kerja (Jiwa)`
-
-# Prepare land proportion
-land_proportion <- apply(proposi_lahan[, -1], 2, as.numeric)
-dimnames(land_proportion) <- NULL
-
-# Prepare landuse table
-landuse_table <- luas_area
-colnames(landuse_table)[1:3] <- c("ID", "LC", "area")
-
-# Prepare growth rate
-growth_rate <- laju_pertumbuhan %>% 
-  pull(`Laju Pertumbuhan`)
-
-# Validate IO input
-validate_io_data(sector, intermediate_consumption.m, final_demand.m, added_value.m, labour, land_proportion)
-
-# Build Full IO Table & Code Registry
-full_io_result <- build_full_io_table(
-  sector = sector,
-  intermediate_consumption_m = intermediate_consumption.m,
-  final_demand_m = final_demand.m,
-  final_demand_component = final_demand_component,
-  added_value_m = added_value.m,
-  added_value_lookup = added_value_lookup
-)
-full_io_table <- full_io_result$full_io_table
-code_registry <- full_io_result$code_registry
-
+```{r save-input-preprocessing, echo=FALSE, message=FALSE, warning=FALSE}
 # Save preprocessing results to RDS
-input_preprocessing <- list(
+io <- list(
+  profile                  = profile,
   sector                   = sector,
   intermediate_consumption = intermediate_consumption.m,
   final_demand             = final_demand.m,
   final_demand_component   = final_demand_component,
   added_value              = added_value.m,
   added_value_lookup       = added_value_lookup,
-  labour                   = labour,
-  land_proportion          = land_proportion,
-  landuse_table            = landuse_table,
-  growth_rate              = growth_rate,
   full_io_table            = full_io_table,
   code_registry            = code_registry
 )
 
+# Define input_preprocessing
+input_preprocessing <- list(
+  io                       = io,
+  labour                   = labour,
+  land_proportion          = land_proportion,
+  landuse_table            = landuse_table,
+  growth_rate              = growth_rate,
+  status                   = validation_status,
+  metadata                 = io_metadata
+)
+  
 # Save preprocessing results
-save_preprocessing_data(input_preprocessing)
-
-# Reload from RDS to ensure objects are sourced from the saved file
-input_preprocessing <- readRDS("inst/extdata/output/descriptive_input_preprocessing.rds")
+save_preprocessing_data(input_preprocessing, output_dir)
 ```
 
 ```{r, echo=FALSE, message=FALSE, warning=FALSE}
 # =====================================================
 # CORE ANALYSIS
 # =====================================================
-
-sector                     <- input_preprocessing$sector
-intermediate_consumption.m <- input_preprocessing$intermediate_consumption
-final_demand.m             <- input_preprocessing$final_demand
-added_value.m              <- input_preprocessing$added_value
-labour                     <- input_preprocessing$labour
-land_proportion            <- input_preprocessing$land_proportion
-landuse_table              <- input_preprocessing$landuse_table
-growth_rate                <- input_preprocessing$growth_rate
-full_io_table              <- input_preprocessing$full_io_table
-code_registry              <- input_preprocessing$code_registry
 
 # Balance check
 balance_result <- check_io_balance(
@@ -226,9 +307,8 @@ LM   <- calc_labour_multiplier(leontief_result$Leontief,
                                labour,
                                gdp_baseline$Total_OUTPUT, sector)
 SUBM <- calc_sub_multiplier(leontief_result$Leontief,
-                            gdp_baseline$OUTPUT, 
-                            added_value.m, 
-                            intermediate_consumption.m, sector)
+                            intermediate_consumption.m,
+                            added_value.m, sector)
 multiplier_table <- combine_multipliers(OM, IM, LM, SUBM)
 
 # Save core analysis results to RDS
@@ -402,7 +482,7 @@ layout_columns(
 tags$div(style = "height:30px;")
 
 DT::datatable(gdp_baseline %>% dplyr::select(-Total_OUTPUT)) %>%
-  DT::formatRound(c("GDP", "OUTPUT", "Land_Requirement", "FD", "LRC"),
+  DT::formatRound(c("GDP", "OUTPUT", "Land_Requirement", "FD"),
                   digits = 2, mark = ",") %>%
   DT::formatRound(c("GDP_PROP", "LPC", "Prop_FD"), digits = 2)
 ```

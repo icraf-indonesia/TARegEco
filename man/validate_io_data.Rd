@@ -2,7 +2,7 @@
 % Please edit documentation in R/validate.R
 \name{validate_io_data}
 \alias{validate_io_data}
-\title{Validate Input-Output data}
+\title{Validate Input-Output data with comprehensive exploded report}
 \usage{
 validate_io_data(
   sector,
@@ -10,7 +10,11 @@ validate_io_data(
   final_demand,
   added_value,
   labour,
-  land_proportion
+  land_proportion,
+  landuse_table = NULL,
+  growth_rate = NULL,
+  tolerance_io = 0.01,
+  stop_on_fail = TRUE
 )
 }
 \arguments{
@@ -31,23 +35,27 @@ containing labour per sector.}
 
 \item{land_proportion}{A numeric matrix of land proportion
 (Sector x Land Cover Class).}
+
+\item{landuse_table}{Optional data frame or tibble with at least columns
+"LC" (land cover name) and "area" (hectares). Number of rows must
+equal the number of columns of `land_proportion`. If `NULL` (default),
+the land use checks are reported as `SKIP` and not run.}
+
+\item{growth_rate}{Optional numeric vector of length `n_sec` containing
+sectoral growth rates (in decimal, e.g., 0.02 for 2%). If `NULL`
+(default), the growth rate checks are reported as `SKIP` and not run.}
+
+\item{tolerance_io}{Numeric; maximum allowed absolute relative difference
+for the IO identity. Default 0.01 (1%).}
+
+\item{stop_on_fail}{Logical; if `TRUE` (default), stops on any `FAIL`.}
 }
 \value{
-Returns `TRUE` invisibly if all inputs pass validation.
-  Otherwise, stops with a clear error message.
+A tibble with validation results (invisibly if all pass).
 }
 \description{
-Checks dimension, sector names, data types, and missing values (NA)
-across all matrices/tables that compose the Input-Output model.
-}
-\details{
-This function is called after reading all input files and before any
-computation begins. Sector order is aligned automatically based on the
-sector names from `sector`.
-}
-\examples{
-\dontrun{
-validate_io_data(sector, ic, fd, av, labour, land_prop)
-}
-
+Checks dimensions, sector names, data types, missing values, non‑negativity
+(for IC and labour only), land proportions, land use table consistency,
+growth rates, and the fundamental IO identity (warning only).
+Prints a detailed validation report; stops only on critical failures.
 }

@@ -24,10 +24,14 @@ export(generate_gdp_bar_chart)
 export(generate_gdp_donut_chart)
 export(generate_prs_plot)
 export(get_added_value_components)
+<<<<<<< HEAD
+export(get_io_metadata)
+=======
 export(get_intensity)
 export(load_projection_baseline)
 export(load_scenario_inputs)
 export(plot_comparison)
+>>>>>>> main
 export(read_input_file)
 export(recalculate_leontief)
 export(run_projection)
@@ -41,26 +45,18 @@ import(dplyr)
 import(ggplot2)
 import(tidyr)
 importFrom(DT,datatable)
-importFrom(bslib,
-  layout_columns,
-  value_box
-)
-importFrom(htmltools,
-  div,
-  tags
-)
-importFrom(openxlsx,
-  addWorksheet,
-  createWorkbook,
-  saveWorkbook,
-  setColWidths,
-  writeData
-)
-importFrom(plotly,
-  ggplotly,
-  layout,
-  plot_ly
-)
+importFrom(bslib,layout_columns)
+importFrom(bslib,value_box)
+importFrom(htmltools,div)
+importFrom(htmltools,tags)
+importFrom(openxlsx,addWorksheet)
+importFrom(openxlsx,createWorkbook)
+importFrom(openxlsx,saveWorkbook)
+importFrom(openxlsx,setColWidths)
+importFrom(openxlsx,writeData)
+importFrom(plotly,ggplotly)
+importFrom(plotly,layout)
+importFrom(plotly,plot_ly)
 importFrom(readxl,read_excel)
 importFrom(tibble,as_tibble)
 importFrom(tools,file_ext)
