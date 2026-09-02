@@ -28,9 +28,6 @@ library(tidyr)
 library(stringr)
 library(tibble)
 
-# Load all functions from R/
-source_files <- list.files("R", pattern = "\\.R$", full.names = TRUE)
-invisible(lapply(source_files, source))
 ```
 
 # Pendahuluan
@@ -307,8 +304,9 @@ LM   <- calc_labour_multiplier(leontief_result$Leontief,
                                labour,
                                gdp_baseline$Total_OUTPUT, sector)
 SUBM <- calc_sub_multiplier(leontief_result$Leontief,
-                            intermediate_consumption.m,
-                            added_value.m, sector)
+                            gdp_baseline$OUTPUT,
+                            added_value.m,
+                            intermediate_consumption.m, sector)
 multiplier_table <- combine_multipliers(OM, IM, LM, SUBM)
 
 # Save core analysis results to RDS
@@ -403,7 +401,7 @@ DT::datatable(primary_sector_table %>% dplyr::select(-ID),
                    digits = 3)
 ```
 
-Sebanyak `r nrow(primary_sector_table)` sektor unggulan teridentifikasi memiliki nilai DBL dan DFL lebih besar atau sama dengan 1. Sektor-sektor tersebut memiliki keterkaitan ke belakang dan ke depan yang kuat, sehingga berperan penting dalam mendorong aktivitas ekonomi baik pada sektor hulu maupun hilir. Sektor unggulan yang teridentifikasi meliputi: `r paste(primary_sector_table$SECTOR, collapse = ", ")`.
+Sebanyak `r nrow(primary_sector_table)` sektor unggulan teridentifikasi memiliki nilai Indeks Daya Penyebaran (ITBL) **dan** Indeks Derajat Kepekaan (ITFL) lebih besar dari 1, mengikuti kriteria BPS. Kedua indeks tersebut dinormalisasi sehingga nilai rata-ratanya tepat sama dengan 1, sehingga nilai di atas 1 berarti di atas rata-rata seluruh sektor. Sektor-sektor tersebut memiliki keterkaitan ke belakang dan ke depan yang kuat, sehingga berperan penting dalam mendorong aktivitas ekonomi baik pada sektor hulu maupun hilir. Sektor unggulan yang teridentifikasi meliputi: `r paste(primary_sector_table$SECTOR, collapse = ", ")`.
 
 # 4. Analisis Backward dan Forward Linkage
 
@@ -412,55 +410,62 @@ prs_plot <- generate_prs_plot(linkages_table)
 ggplotly(prs_plot)
 ```
 
-Grafik topologi sektor mengelompokkan sektor ekonomi berdasarkan nilai Direct Backward Linkage (DBL) dan Direct Forward Linkage (DFL). Garis vertikal dan horizontal menunjukkan nilai rata-rata DBL dan DFL.
+Diagram di bawah ini menampilkan data yang sama, tetapi diwarnai menurut kuadran BPS.
 
-Jumlah sektor pada Kuadran I (DBL tinggi, DFL tinggi) adalah `r nrow(subset(linkages_table, Quadrant == "Quadrant I"))` sektor, Kuadran II (DBL rendah, DFL tinggi) `r nrow(subset(linkages_table, Quadrant == "Quadrant II"))` sektor, Kuadran III (DBL rendah, DFL rendah) `r nrow(subset(linkages_table, Quadrant == "Quadrant III"))` sektor, dan Kuadran IV (DBL tinggi, DFL rendah) `r nrow(subset(linkages_table, Quadrant == "Quadrant IV"))` sektor. Sektor pada Kuadran I umumnya merupakan sektor strategis karena memiliki keterkaitan kuat baik ke sektor hulu maupun hilir, sehingga berpotensi menjadi penggerak utama perekonomian wilaya
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+quadrant_plot <- generate_quadrant_plot(linkages_table)
+ggplotly(quadrant_plot, tooltip = "text")
+```
+
+Grafik topologi sektor mengelompokkan sektor ekonomi berdasarkan Indeks Daya Penyebaran (ITBL, sumbu datar) dan Indeks Derajat Kepekaan (ITFL, sumbu tegak), mengikuti pemetaan kuadran BPS. Karena kedua indeks dinormalisasi terhadap rata-rata seluruh sektor, garis merah putus-putus pada nilai 1 sekaligus menunjukkan nilai rata-rata.
+
+Jumlah sektor pada Kuadran I (industri unggulan: ITBL \> 1 dan ITFL \> 1) adalah `r nrow(subset(linkages_table, Quadrant == "Kuadran I"))` sektor, Kuadran II (potensi unggul: ITBL \> 1 dan ITFL \< 1) `r nrow(subset(linkages_table, Quadrant == "Kuadran II"))` sektor, Kuadran III (kurang diunggulkan: ITBL \< 1 dan ITFL \> 1) `r nrow(subset(linkages_table, Quadrant == "Kuadran III"))` sektor, dan Kuadran IV (tertinggal: ITBL \< 1 dan ITFL \< 1) `r nrow(subset(linkages_table, Quadrant == "Kuadran IV"))` sektor. Sektor pada Kuadran I umumnya merupakan sektor strategis karena memiliki keterkaitan kuat baik ke sektor hulu maupun hilir, sehingga berpotensi menjadi penggerak utama perekonomian wilayah.
 
 ## Tabel Sektor Setiap Kuadran {.tabset}
 
 ### Kuadran 1
 
 ```{r, echo=FALSE, message=FALSE, warning=FALSE}
-quadrant_1 <- subset(linkages_table, Quadrant == "Quadrant I")
+quadrant_1 <- subset(linkages_table, Quadrant == "Kuadran I")
 DT::datatable(quadrant_1, rownames = FALSE) %>%
   DT::formatRound(columns = c("DFL","TFL","ITFL","DBL","TBL","ITBL",
                               "|TFL-DFL|","|TBL-DBL|"), digits = 3, mark = ",")
 ```
 
-Kuadran I menunjukkan sektor dengan keterkaitan ke depan dan ke belakang yang kuat (DBL \> 1 dan DFL \> 1). Sektor dalam kuadran ini berperan sebagai sektor unggulan karena mampu menyerap input dari sektor lain sekaligus menyuplai output untuk aktivitas ekonomi lainnya.
+Kuadran I (**industri unggulan**) menunjukkan sektor dengan keterkaitan ke belakang dan ke depan yang kuat (ITBL \> 1 dan ITFL \> 1). Sektor dalam kuadran ini mampu menyerap input dari sektor lain sekaligus menyuplai output untuk aktivitas ekonomi lainnya.
 
 ### Kuadran 2
 
 ```{r, echo=FALSE, message=FALSE, warning=FALSE}
-quadrant_2 <- subset(linkages_table, Quadrant == "Quadrant II")
+quadrant_2 <- subset(linkages_table, Quadrant == "Kuadran II")
 DT::datatable(quadrant_2, rownames = FALSE) %>%
   DT::formatRound(columns = c("DFL","TFL","ITFL","DBL","TBL","ITBL",
                               "|TFL-DFL|","|TBL-DBL|"), digits = 3, mark = ",")
 ```
 
-Kuadran II menunjukkan sektor dengan keterkaitan ke depan yang kuat namun keterkaitan ke belakang lemah (DBL \< 1 dan DFL \> 1). Sektor pada kuadran ini umumnya berfungsi sebagai penyedia bahan baku atau sektor hulu yang outputnya digunakan oleh banyak sektor lain.
+Kuadran II (**potensi unggul**) menunjukkan sektor dengan keterkaitan ke belakang yang kuat namun keterkaitan ke depan lemah (ITBL \> 1 dan ITFL \< 1). Sektor pada kuadran ini banyak menyerap input dari sektor lain, sehingga peningkatan permintaannya mendorong aktivitas sektor hulu.
 
 ### Kuadran 3
 
 ```{r, echo=FALSE, message=FALSE, warning=FALSE}
-quadrant_3 <- subset(linkages_table, Quadrant == "Quadrant III")
+quadrant_3 <- subset(linkages_table, Quadrant == "Kuadran III")
 DT::datatable(quadrant_3, rownames = FALSE) %>%
   DT::formatRound(columns = c("DFL","TFL","ITFL","DBL","TBL","ITBL",
                               "|TFL-DFL|","|TBL-DBL|"), digits = 3, mark = ",")
 ```
 
-Kuadran III menunjukkan sektor dengan keterkaitan ke belakang yang kuat namun keterkaitan ke depan lemah (DBL \> 1 dan DFL \< 1). Sektor dalam kuadran ini banyak menyerap input dari sektor lain, tetapi outputnya relatif tidak banyak digunakan sebagai input antar sektor.
+Kuadran III (**kurang diunggulkan**) menunjukkan sektor dengan keterkaitan ke depan yang kuat namun keterkaitan ke belakang lemah (ITBL \< 1 dan ITFL \> 1). Sektor pada kuadran ini umumnya berfungsi sebagai penyedia bahan baku yang outputnya digunakan banyak sektor lain.
 
 ### Kuadran 4
 
 ```{r, echo=FALSE, message=FALSE, warning=FALSE}
-quadrant_4 <- subset(linkages_table, Quadrant == "Quadrant IV")
+quadrant_4 <- subset(linkages_table, Quadrant == "Kuadran IV")
 DT::datatable(quadrant_4, rownames = FALSE) %>%
   DT::formatRound(columns = c("DFL","TFL","ITFL","DBL","TBL","ITBL",
                               "|TFL-DFL|","|TBL-DBL|"), digits = 3, mark = ",")
 ```
 
-Kuadran IV menunjukkan sektor dengan keterkaitan ke depan dan ke belakang yang relatif lemah (DBL \< 1 dan DFL \< 1). Sektor pada kuadran ini cenderung memiliki keterbatasan dalam mendorong aktivitas ekonomi antar sektor dan sering kali memiliki ketergantungan yang lebih tinggi terhadap impor atau permintaan akhir.
+Kuadran IV (**tertinggal**) menunjukkan sektor dengan keterkaitan ke depan dan ke belakang yang relatif lemah (ITBL \< 1 dan ITFL \< 1). Sektor pada kuadran ini cenderung memiliki keterbatasan dalam mendorong aktivitas ekonomi antar sektor dan sering kali memiliki ketergantungan yang lebih tinggi terhadap impor atau permintaan akhir.
 
 # 5. PDRB per Sektor
 ```{r, echo=FALSE, message=FALSE, warning=FALSE}
@@ -519,6 +524,51 @@ DT::datatable(multiplier_table) %>%
                   digits = 2) %>%
   DT::formatRound("Lab.multiplier", digits = 5)
 ```
+
+## Top 15 Sektor per Jenis Multiplier {.tabset}
+
+### Output
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ggplotly(generate_multiplier_bar_chart(
+  multiplier_table, "Out.multiplier",
+  title = "Top 15 Sektor - Output Multiplier",
+  x_label = "Output Effect (Juta Rupiah/Juta Rupiah)"
+), tooltip = "text")
+```
+
+### Pendapatan
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ggplotly(generate_multiplier_bar_chart(
+  multiplier_table, "Inc.multiplier",
+  title = "Top 15 Sektor - Income Multiplier",
+  x_label = "Income Effect (Juta Rupiah/Juta Rupiah)"
+), tooltip = "text")
+```
+
+### Tenaga Kerja
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ggplotly(generate_multiplier_bar_chart(
+  multiplier_table, "Lab.multiplier",
+  title = "Top 15 Sektor - Labour Multiplier",
+  x_label = "Labour Effect (Jiwa/Juta Rupiah)",
+  digits = 5
+), tooltip = "text")
+```
+
+### Surplus Usaha Bruto
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ggplotly(generate_multiplier_bar_chart(
+  multiplier_table, "SUB.multiplier",
+  title = "Top 15 Sektor - SUB Multiplier",
+  x_label = "SUB Effect (Juta Rupiah/Juta Rupiah)"
+), tooltip = "text")
+```
+
+##
 
 Analisis multiplier menunjukkan bahwa sektor `r multiplier_table$SECTOR[which.max(multiplier_table$Out.multiplier)]` memiliki Output Multiplier tertinggi (`r round(max(multiplier_table$Out.multiplier),3)`), sehingga memberikan dampak terbesar terhadap peningkatan output ekonomi. Sektor `r multiplier_table$SECTOR[which.max(multiplier_table$Inc.multiplier)]` memiliki Income Multiplier tertinggi (`r round(max(multiplier_table$Inc.multiplier),3)`), yang menunjukkan kemampuan terbesar dalam menciptakan pendapatan tenaga kerja. Sektor `r multiplier_table$SECTOR[which.max(multiplier_table$Lab.multiplier)]` memiliki Labour Multiplier tertinggi (`r signif(max(multiplier_table$Lab.multiplier),4)`), sehingga berpotensi memberikan dampak terbesar terhadap penciptaan kesempatan kerja. Di sisi lain, sektor `r multiplier_table$SECTOR[which.max(multiplier_table$SUB.multiplier)]` memiliki Surplus Usaha Bruto (SUB) Multiplier tertinggi (`r round(max(multiplier_table$SUB.multiplier),3)`), yang menunjukkan kemampuan terbesar dalam menghasilkan surplus usaha dan keuntungan ekonomi.
 

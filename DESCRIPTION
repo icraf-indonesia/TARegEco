@@ -21,7 +21,8 @@ Imports:
     stringr,
     bslib,
     htmltools,
-    tools
+    tools,
+    stats
 Suggests:
     testthat (>= 3.0.0),
     knitr,
