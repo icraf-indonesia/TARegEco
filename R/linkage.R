@@ -1,7 +1,8 @@
 #' Compute technical coefficient matrix and Leontief inverse
 #'
-#' Calculates the technical coefficient matrix (A) and the Leontief inverse
-#' \eqn{(I - A)^{-1}} from intermediate consumption and added value matrices.
+#' Computes the technical coefficient matrix (A) and the Leontief inverse
+#' \eqn{(I - A)^{-1}} using validated added value components rather than
+#' raw column sums.
 #'
 #' @param intermediate_consumption_m Numeric matrix of intermediate
 #'   consumption (Sector x Sector).
@@ -13,11 +14,13 @@
 #'   \item{inverse_total_input}{Vector of inverse total input per sector}
 #'
 #' @details
-#' The technical coefficient matrix is computed as:
-#' \deqn{A = Z \times diag(1 / total\_input)}
-#' where total input for sector j is the sum of intermediate consumption
-#' column j and added value column j. The Leontief inverse is then obtained
-#' as \eqn{L = (I - A)^{-1}}.
+#' Total input is computed using [get_added_value_components()], which
+#' identifies only the relevant primary-input rows (compensation, surplus,
+#' taxes, imports) instead of summing all rows of the added value matrix.
+#'
+#' @references
+#' Miller, R.E. & Blair, P.D. (2009). *Input-Output Analysis: Foundations and
+#' Extensions*. Eurostat (2008). *Manual of Supply, Use and Input-Output Tables*.
 #'
 #' @examples
 #' \dontrun{
@@ -26,21 +29,20 @@
 #'
 #' @export
 compute_leontief <- function(intermediate_consumption_m, added_value_m) {
+  
   if (!is.matrix(intermediate_consumption_m)) stop("intermediate_consumption_m must be a matrix.")
   if (!is.matrix(added_value_m)) stop("added_value_m must be a matrix.")
-  if (ncol(intermediate_consumption_m) != ncol(added_value_m)) {
-    stop("intermediate_consumption_m and added_value_m must have the same number of columns.")
-  }
   
-  dim_n <- ncol(intermediate_consumption_m)
-  ic_ctot <- colSums(intermediate_consumption_m)
-  av_ctot <- colSums(added_value_m)
-  inverse_total_input <- 1 / (ic_ctot + av_ctot)
+  # Total input from validated added value components
+  comp <- get_added_value_components(intermediate_consumption_m, added_value_m)
+  total_input <- comp$total_input
+  
+  inverse_total_input <- 1 / total_input
   inverse_total_input[is.infinite(inverse_total_input)] <- 0
   
   t_input_inverse <- diag(inverse_total_input)
   A <- intermediate_consumption_m %*% t_input_inverse
-  I <- diag(dim_n)
+  I <- diag(ncol(intermediate_consumption_m))
   Leontief <- solve(I - A)
   
   list(

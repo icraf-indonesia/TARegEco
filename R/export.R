@@ -269,8 +269,13 @@ save_analysis_data <- function(sector,
     multipliers = list(
       output = OM$table,
       income = IM$table,
-      labour = LM$table,
-      sub    = SUBM$table
+      labour = LM$table  |> 
+        dplyr::mutate(
+          Labour_Compensation = SUBM$compensation,
+          Labour = as.numeric(unlist(labour))
+        ),
+      sub    = SUBM$table |> 
+        dplyr::mutate(Surplus = SUBM$surplus)
     ),
     full_io_table            = full_io_table,
     code_registry            = code_registry
@@ -291,4 +296,43 @@ save_analysis_data <- function(sector,
   }
   
   invisible(output_dir)
+}
+
+#' Save projection scenario results to RDS
+#'
+#' Saves the result of a single projection scenario (BAU or intervention) into
+#' an RDS file. The file name is derived from the scenario label after
+#' sanitising invalid characters.
+#'
+#' @param scenario_label Character. Name of the scenario, e.g., `"BAU"` or
+#'   `"Skenario_Pertanian_Maju"`.
+#' @param result Data frame. Projection result returned by [run_projection()].
+#' @param area_matrix Numeric matrix. Area matrix used in the projection.
+#' @param inputs List. Input parameters used in the projection.
+#' @param output_dir Character. Directory to save the RDS file.
+#'   Default is `"inst/extdata/output"`.
+#'
+#' @return Invisibly returns the full path to the saved RDS file.
+#' @export
+save_projection_results <- function(scenario_label,
+                                    result,
+                                    area_matrix,
+                                    inputs,
+                                    output_dir = "inst/extdata/output") {
+  
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+  
+  safe_label <- gsub("[^A-Za-z0-9_]", "_", scenario_label)
+  file_name <- paste0("projection_", safe_label, ".rds")
+  full_path <- file.path(output_dir, file_name)
+  
+  output <- list(
+    scenario    = scenario_label,
+    result      = result,
+    area_matrix = area_matrix,
+    inputs      = inputs
+  )
+  
+  saveRDS(output, full_path)
+  invisible(full_path)
 }

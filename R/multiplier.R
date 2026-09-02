@@ -135,31 +135,47 @@ calc_labour_multiplier <- function(Leontief, labour, total_output, sector, top_n
 
 #' Surplus Usaha Bruto (SUB) multiplier
 #'
-#' SUB multiplier = `colSums(diag(sub_coeff) %*% Leontief)`.
-#' Measures total gross operating surplus generated economy-wide per unit
-#' increase in final demand of a sector.
+#' Computes the gross operating surplus multiplier using sectoral output
+#' as the denominator, consistent with standard Input-Output multiplier
+#' formulas.
 #'
 #' @param Leontief Numeric Leontief inverse matrix.
-#' @param intermediate_consumption_m Numeric matrix of intermediate consumption.
+#' @param total_output Numeric vector of total output per sector.
 #' @param added_value_m Numeric matrix of added value.
+#' @param intermediate_consumption_m Numeric matrix of intermediate consumption.
 #' @param sector A data frame or tibble with at least two columns:
 #'   sector name and category.
 #' @param top_n Integer. Number of top sectors to include in the plot.
 #'
-#' @return A list with elements: `coefficient`, `total_input`, `surplus`,
+#' @return A list with elements: `coefficient`, `total_output`, `surplus`,
 #'   `table`, `top`, `plot`, `compensation`.
 #'
+#' @details
+#' The surplus coefficient is calculated as:
+#' \deqn{sub\_coeff_i = \frac{S_i}{X_i}}
+#' where \eqn{S_i} is gross operating surplus and \eqn{X_i} is total output.
+#'
+#' @references
+#' Miller, R.E. & Blair, P.D. (2009). *Input-Output Analysis: Foundations and
+#' Extensions*, Chapter 6.
+#'
 #' @export
-calc_sub_multiplier <- function(Leontief, intermediate_consumption_m,
-                                added_value_m, sector, top_n = 20) {
+calc_sub_multiplier <- function(Leontief,
+                                total_output,
+                                added_value_m,
+                                intermediate_consumption_m,
+                                sector,
+                                top_n = 20) {
+  
   sector_name <- sector[[1]]
   sector_category <- sector[[2]]
+  
   comp <- get_added_value_components(intermediate_consumption_m, added_value_m)
-  total_input <- comp$total_input
   surplus <- comp$surplus
   compensation <- comp$compensation
   
-  sub_coeff <- ifelse(total_input == 0, 0, surplus / total_input)
+  total_output <- as.numeric(total_output)
+  sub_coeff <- ifelse(total_output == 0, 0, surplus / total_output)
   
   sub_multiplier_matrix <- diag(sub_coeff) %*% Leontief
   sub_multiplier <- colSums(sub_multiplier_matrix, na.rm = TRUE)
@@ -169,6 +185,7 @@ calc_sub_multiplier <- function(Leontief, intermediate_consumption_m,
     CATEGORY = sector_category,
     SUB.multiplier = sub_multiplier
   )
+  
   top_SUB <- head(SUB.multiplier[order(-SUB.multiplier$SUB.multiplier), ], top_n)
   SUB_graph <- ggplot(top_SUB,
                       aes(x = reorder(SECTOR, SUB.multiplier),
@@ -180,7 +197,7 @@ calc_sub_multiplier <- function(Leontief, intermediate_consumption_m,
     theme_minimal()
   
   list(coefficient = sub_coeff,
-       total_input = total_input,
+       total_output = total_output,
        surplus = surplus,
        table = SUB.multiplier,
        top = top_SUB,

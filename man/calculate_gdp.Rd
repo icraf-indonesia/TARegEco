@@ -2,7 +2,7 @@
 % Please edit documentation in R/gdp.R
 \name{calculate_gdp}
 \alias{calculate_gdp}
-\title{Calculate GDP per sector}
+\title{Calculate GDP per sector with land productivity and land requirement coefficients}
 \usage{
 calculate_gdp(
   added_value_m,
@@ -24,7 +24,7 @@ calculate_gdp(
 \item{sector}{A data frame or tibble with at least two columns:
 sector name and category.}
 
-\item{land_proportion}{Numeric matrix of land proportion (Sector x LC).}
+\item{land_proportion}{Numeric matrix of land proportions (Sector x Land Cover).}
 
 \item{landuse_table}{Data frame or tibble with an `area` column
 representing land area in hectares.}
@@ -32,16 +32,25 @@ representing land area in hectares.}
 \item{leontief}{Numeric Leontief inverse matrix.}
 }
 \value{
-A tibble with columns: SECTOR, CATEGORY, GDP, OUTPUT, GDP_PROP,
-  Land_Requirement, LPC, FD, Prop_FD, Total_OUTPUT.
+A tibble with columns: SECTOR, CATEGORY, GDP, OUTPUT,
+  Land_Requirement, LRC, LPC, GDP_PROP, FD, Prop_FD, Total_OUTPUT.
 }
 \description{
-Computes GDP, output, land requirement, LPC, final demand, and total
-output from the Leontief model for each sector.
+Computes GDP, output, land requirement, Land Requirement Coefficient (LRC),
+and Land Productivity Coefficient (LPC) for each sector.
 }
-\examples{
-\dontrun{
-gdp <- calculate_gdp(av, ic, fd, sector, land_prop, landuse_table, L)
-}
+\details{
+Land Requirement Coefficient (LRC) and Land Productivity Coefficient (LPC)
+follow Hubacek & Sun (2001):
 
+\deqn{LRC_i = \frac{Land_i}{X_i}}
+\deqn{LPC_i = \frac{1}{LRC_i} = \frac{X_i}{Land_i}}
+
+where \eqn{X_i} is total sectoral output and \eqn{Land_i} is total land
+requirement of sector i.
+}
+\references{
+Hubacek, K., & Sun, L. (2001). A scenario analysis of China's land use and
+land cover change: incorporating biophysical information into input-output
+modeling. Structural Change and Economic Dynamics, 12(4), 367–397.
 }

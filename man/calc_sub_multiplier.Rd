@@ -6,8 +6,9 @@
 \usage{
 calc_sub_multiplier(
   Leontief,
-  intermediate_consumption_m,
+  total_output,
   added_value_m,
+  intermediate_consumption_m,
   sector,
   top_n = 20
 )
@@ -15,9 +16,11 @@ calc_sub_multiplier(
 \arguments{
 \item{Leontief}{Numeric Leontief inverse matrix.}
 
-\item{intermediate_consumption_m}{Numeric matrix of intermediate consumption.}
+\item{total_output}{Numeric vector of total output per sector.}
 
 \item{added_value_m}{Numeric matrix of added value.}
+
+\item{intermediate_consumption_m}{Numeric matrix of intermediate consumption.}
 
 \item{sector}{A data frame or tibble with at least two columns:
 sector name and category.}
@@ -25,11 +28,20 @@ sector name and category.}
 \item{top_n}{Integer. Number of top sectors to include in the plot.}
 }
 \value{
-A list with elements: `coefficient`, `total_input`, `surplus`,
+A list with elements: `coefficient`, `total_output`, `surplus`,
   `table`, `top`, `plot`, `compensation`.
 }
 \description{
-SUB multiplier = `colSums(diag(sub_coeff) %*% Leontief)`.
-Measures total gross operating surplus generated economy-wide per unit
-increase in final demand of a sector.
+Computes the gross operating surplus multiplier using sectoral output
+as the denominator, consistent with standard Input-Output multiplier
+formulas.
+}
+\details{
+The surplus coefficient is calculated as:
+\deqn{sub\_coeff_i = \frac{S_i}{X_i}}
+where \eqn{S_i} is gross operating surplus and \eqn{X_i} is total output.
+}
+\references{
+Miller, R.E. & Blair, P.D. (2009). *Input-Output Analysis: Foundations and
+Extensions*, Chapter 6.
 }
