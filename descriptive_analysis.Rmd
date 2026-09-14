@@ -428,12 +428,6 @@ prs_plot <- generate_prs_plot(linkages_table)
 ggplotly(prs_plot)
 ```
 
-Diagram di bawah ini menampilkan data yang sama, tetapi diwarnai menurut kuadran BPS.
-
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
-quadrant_plot <- generate_quadrant_plot(linkages_table)
-ggplotly(quadrant_plot, tooltip = "text")
-```
 
 Grafik topologi sektor mengelompokkan sektor ekonomi berdasarkan Indeks Daya Penyebaran (ITBL, sumbu datar) dan Indeks Derajat Kepekaan (ITFL, sumbu tegak), mengikuti pemetaan kuadran BPS. Karena kedua indeks dinormalisasi terhadap rata-rata seluruh sektor, garis merah putus-putus pada nilai 1 sekaligus menunjukkan nilai rata-rata.
 

@@ -31,7 +31,7 @@ generate_prs_plot <- function(linkages_table, show_labels = TRUE, base_size = 12
     # Annotations sit in the plot corners: the region midpoints fall inside the
     # dense cluster of sectors around the reference lines.
     annotate("text", x = x_max, y = y_max, hjust = 1, vjust = 1,
-             label = "Kuadran I\nIndustri unggulan",
+             label = "Kuadran I\Sektor unggulan",
              fontface = "bold", size = 4, colour = "grey30") +
     annotate("text", x = x_max, y = y_min, hjust = 1, vjust = 0,
              label = "Kuadran II\nPotensi unggul",
@@ -48,66 +48,6 @@ generate_prs_plot <- function(linkages_table, show_labels = TRUE, base_size = 12
     scale_size_continuous(range = c(4, 18), guide = "none") +
     theme_minimal(base_size = base_size) +
     theme(panel.grid.minor = element_blank(), legend.position = "bottom")
-
-  if (show_labels) {
-    p <- p + geom_text(aes(label = ID), size = 3, color = "black", vjust = -1)
-  }
-
-  p
-}
-
-#' Generate BPS quadrant plot
-#'
-#' Scatter plot of the normalised linkage indices, coloured by BPS quadrant.
-#' ITBL (Indeks Daya Penyebaran) on the horizontal axis and ITFL (Indeks
-#' Derajat Kepekaan) on the vertical, with reference lines at 1.
-#'
-#' @param linkages_table A tibble produced by [create_linkages_table()]. If it
-#'   has no `Quadrant` column, [classify_quadrant()] is applied first.
-#' @param show_labels Logical. If `TRUE`, sector IDs are displayed.
-#' @param base_size Numeric. Base font size for ggplot.
-#'
-#' @return A `ggplot` object.
-#'
-#' @export
-generate_quadrant_plot <- function(linkages_table, show_labels = FALSE, base_size = 12) {
-  quadrant_labels <- c(
-    "Kuadran I"   = "K1 (BL Tinggi, FL Tinggi)",
-    "Kuadran II"  = "K2 (BL Tinggi, FL Rendah)",
-    "Kuadran III" = "K3 (BL Rendah, FL Tinggi)",
-    "Kuadran IV"  = "K4 (BL Rendah, FL Rendah)"
-  )
-  quadrant_colours <- c(
-    "K1 (BL Tinggi, FL Tinggi)" = "#F8766D",
-    "K2 (BL Tinggi, FL Rendah)" = "#7CAE00",
-    "K3 (BL Rendah, FL Tinggi)" = "#00BFC4",
-    "K4 (BL Rendah, FL Rendah)" = "#C77CFF"
-  )
-
-  if (is.null(linkages_table$Quadrant)) linkages_table <- classify_quadrant(linkages_table)
-  linkages_table$Kuadran <- factor(
-    unname(quadrant_labels[linkages_table$Quadrant]),
-    levels = unname(quadrant_labels)
-  )
-
-  p <- ggplot(linkages_table, aes(x = ITBL, y = ITFL, color = Kuadran)) +
-    geom_point(size = 3, alpha = 0.9,
-               aes(text = paste0(SECTOR,
-                                 "<br>IDP (ITBL): ", round(ITBL, 3),
-                                 "<br>IDK (ITFL): ", round(ITFL, 3),
-                                 "<br>", Quadrant))) +
-    geom_hline(yintercept = 1, colour = "red", linetype = "dashed") +
-    geom_vline(xintercept = 1, colour = "red", linetype = "dashed") +
-    scale_colour_manual(values = quadrant_colours, drop = FALSE) +
-    labs(
-      title = "Diagram Kuadran Backward & Forward Linkage Sektor Ekonomi",
-      subtitle = "Garis Merah Putus-putus Menunjukkan Batas Indeks = 1.00",
-      x = "Indeks Total Backward Linkage (ITBL) / Indeks Daya Penyebaran (IDP)",
-      y = "Indeks Total Forward Linkage (ITFL) / Indeks Derajat Kepekaan (IDK)",
-      colour = "Kuadran"
-    ) +
-    theme_minimal(base_size = base_size) +
-    theme(panel.grid.minor = element_blank())
 
   if (show_labels) {
     p <- p + geom_text(aes(label = ID), size = 3, color = "black", vjust = -1)
