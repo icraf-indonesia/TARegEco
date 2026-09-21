@@ -299,16 +299,21 @@ gdp_baseline <- calculate_gdp(
 )
 
 # Multiplier
-OM   <- calc_output_multiplier(leontief_result$Leontief, sector)
+OM   <- calc_output_multiplier(leontief_result$Leontief, 
+                               sector)
 IM   <- calc_income_multiplier(leontief_result$Leontief,
                                gdp_baseline$Total_OUTPUT,
-                               added_value.m, sector)
+                               added_value.m, 
+                               sector)
 LM   <- calc_labour_multiplier(leontief_result$Leontief,
                                labour,
-                               gdp_baseline$Total_OUTPUT, sector)
+                               gdp_baseline$Total_OUTPUT, 
+                               sector)
 SUBM <- calc_sub_multiplier(leontief_result$Leontief,
+                            gdp_baseline$Total_OUTPUT,
+                            added_value.m,
                             intermediate_consumption.m,
-                            added_value.m, sector)
+                            sector)
 multiplier_table <- combine_multipliers(OM, IM, LM, SUBM)
 
 # Save core analysis results to RDS
