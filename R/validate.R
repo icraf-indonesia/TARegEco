@@ -13,9 +13,9 @@ find_row_alias <- function(data, aliases) {
   available_rows <- trimws(tolower(rownames(data)))
   aliases_clean  <- trimws(tolower(aliases))
   idx <- match(aliases_clean, available_rows)
-  found <- aliases[which(!is.na(idx))[1]]
-  if (length(found) > 0) return(found[1])
-  return(NULL)
+  pos <- which(!is.na(idx))
+  if (length(pos) == 0) return(NULL)
+  aliases[pos[1]]
 }
 
 #' Validate Input-Output data with comprehensive exploded report

@@ -2,7 +2,7 @@
 % Please edit documentation in R/plot.R
 \name{generate_prs_plot}
 \alias{generate_prs_plot}
-\title{Generate quadrant scatter plot}
+\title{Generate linkage bubble plot by sector category}
 \usage{
 generate_prs_plot(linkages_table, show_labels = TRUE, base_size = 12)
 }
@@ -17,6 +17,11 @@ generate_prs_plot(linkages_table, show_labels = TRUE, base_size = 12)
 A `ggplot` object.
 }
 \description{
-Creates a scatter plot of Direct Backward Linkage (DBL) vs Direct Forward
-Linkage (DFL) with quadrant lines.
+Scatter plot of ITBL (Indeks Daya Penyebaran) against ITFL (Indeks Derajat
+Kepekaan), with bubble size showing combined linkage strength and colour
+showing sector category. Quadrant reference lines are drawn at 1.
+}
+\details{
+Use [generate_quadrant_plot()] for the companion view coloured by BPS
+quadrant instead of category.
 }

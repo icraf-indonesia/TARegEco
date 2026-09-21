@@ -13,6 +13,19 @@ classify_quadrant(linkages_table)
 A tibble with an additional `Quadrant` column.
 }
 \description{
-Classifies sectors into quadrants I-IV based on direct backward and
-forward linkage values.
+Classifies sectors into quadrants I-IV from the normalised linkage indices
+ITBL (BPS: Indeks Daya Penyebaran) and ITFL (Indeks Derajat Kepekaan),
+following the quadrant scheme published by BPS.
+}
+\details{
+BPS quadrant scheme:
+\itemize{
+  \item Kuadran I   (ITBL > 1, ITFL > 1): industri unggulan
+  \item Kuadran II  (ITBL > 1, ITFL < 1): potensi unggul
+  \item Kuadran III (ITBL < 1, ITFL > 1): kurang diunggulkan
+  \item Kuadran IV  (ITBL < 1, ITFL < 1): tertinggal
+}
+}
+\references{
+BPS Aceh, *Publikasi Tabel I-O 2016*, "Pemetaan Industri Menurut Kuadran".
 }

@@ -138,37 +138,64 @@ create_linkages_table <- function(sector, linkage_result) {
   )
 }
 
-#' Select primary sectors
+#' Select key sectors (sektor unggulan)
 #'
-#' Selects sectors with `DBL >= 1` or `DFL >= 1`.
+#' Selects sectors with `ITBL > 1` **and** `ITFL > 1`, following BPS practice:
+#' "Suatu industri dikategorikan sebagai Industri Unggulan jika memiliki IBL
+#' dan IFL lebih dari 1 (satu)."
 #'
 #' @param linkages_table A tibble produced by [create_linkages_table()].
 #'
-#' @return A tibble containing primary sectors.
+#' @return A tibble containing key sectors.
+#'
+#' @details
+#' The threshold of 1 belongs to the **normalised** indices ITBL and ITFL
+#' (BPS: Indeks Daya Penyebaran and Indeks Derajat Kepekaan), which are
+#' constructed so their mean is exactly 1. The direct linkages DBL and DFL
+#' must not be tested against 1: `DBL = colSums(A)` is the intermediate input
+#' share of total input, so it is strictly below 1 whenever value added is
+#' non-negative, which makes the test unsatisfiable.
+#'
+#' @references
+#' BPS, *Publikasi Tabel Input-Output 2016* (provincial series).
+#' Rasmussen, P.N. (1956). *Studies in Inter-sectoral Relations*.
 #'
 #' @export
 select_primary_sectors <- function(linkages_table) {
-  primary_sector <- subset(linkages_table, DBL >= 1 | DFL >= 1)
+  primary_sector <- subset(linkages_table, ITBL > 1 & ITFL > 1)
   rownames(primary_sector) <- NULL
   primary_sector
 }
 
 #' Classify sectors into quadrants
 #'
-#' Classifies sectors into quadrants I-IV based on direct backward and
-#' forward linkage values.
+#' Classifies sectors into quadrants I-IV from the normalised linkage indices
+#' ITBL (BPS: Indeks Daya Penyebaran) and ITFL (Indeks Derajat Kepekaan),
+#' following the quadrant scheme published by BPS.
 #'
 #' @param linkages_table A tibble produced by [create_linkages_table()].
 #'
 #' @return A tibble with an additional `Quadrant` column.
 #'
+#' @details
+#' BPS quadrant scheme:
+#' \itemize{
+#'   \item Kuadran I   (ITBL > 1, ITFL > 1): industri unggulan
+#'   \item Kuadran II  (ITBL > 1, ITFL < 1): potensi unggul
+#'   \item Kuadran III (ITBL < 1, ITFL > 1): kurang diunggulkan
+#'   \item Kuadran IV  (ITBL < 1, ITFL < 1): tertinggal
+#' }
+#'
+#' @references
+#' BPS Aceh, *Publikasi Tabel I-O 2016*, "Pemetaan Industri Menurut Kuadran".
+#'
 #' @export
 classify_quadrant <- function(linkages_table) {
   linkages_table$Quadrant <- dplyr::case_when(
-    linkages_table$DBL > 1 & linkages_table$DFL > 1 ~ "Quadrant I",
-    linkages_table$DBL < 1 & linkages_table$DFL > 1 ~ "Quadrant II",
-    linkages_table$DBL > 1 & linkages_table$DFL < 1 ~ "Quadrant III",
-    linkages_table$DBL < 1 & linkages_table$DFL < 1 ~ "Quadrant IV",
+    linkages_table$ITBL > 1 & linkages_table$ITFL > 1 ~ "Kuadran I",
+    linkages_table$ITBL > 1 & linkages_table$ITFL < 1 ~ "Kuadran II",
+    linkages_table$ITBL < 1 & linkages_table$ITFL > 1 ~ "Kuadran III",
+    linkages_table$ITBL < 1 & linkages_table$ITFL < 1 ~ "Kuadran IV",
     TRUE ~ "Undefined"
   )
   linkages_table
