@@ -31,7 +31,7 @@ generate_prs_plot <- function(linkages_table, show_labels = TRUE, base_size = 12
     # Annotations sit in the plot corners: the region midpoints fall inside the
     # dense cluster of sectors around the reference lines.
     annotate("text", x = x_max, y = y_max, hjust = 1, vjust = 1,
-             label = "Kuadran I\Sektor unggulan",
+             label = "Kuadran I\nSektor unggulan",
              fontface = "bold", size = 4, colour = "grey30") +
     annotate("text", x = x_max, y = y_min, hjust = 1, vjust = 0,
              label = "Kuadran II\nPotensi unggul",

@@ -27,6 +27,10 @@ library(dplyr)
 library(tidyr)
 library(stringr)
 library(tibble)
+
+# Load all functions from R/
+source_files <- list.files("R", pattern = "\\.R$", full.names = TRUE)
+invisible(lapply(source_files, source))
 ```
 
 # Pendahuluan
@@ -45,7 +49,7 @@ Dokumen ini adalah notebook R Markdown berjudul "Trade-off Analysis (TA) Ekonomi
 # =====================================================
 # INPUT
 # =====================================================
-io_file_path <- "inst/extdata/example_data/Bukecap/Input_IO_template_BUKECAP.xlsx"
+io_file_path <- "inst/extdata/example_data/Bukecap/Input_IO_template_BUKECAP_zero rate.xlsx"
 landuse_table_file_path <- "inst/extdata/example_data/Bukecap/Input_penutup_lahan_template_BUKECAP.xlsx"
 preprocessing_rds <- "inst/extdata/output/descriptive_input_preprocessing.rds"
 output_dir <- "inst/extdata/output/"
@@ -186,6 +190,28 @@ if (!load_rds) {
   full_io_table <- input_preprocessing$io$full_io_table
   code_registry <- input_preprocessing$io$code_registry
 }
+```
+
+```{r create-sector-index, echo=FALSE, message=FALSE, warning=FALSE}
+# =====================================================
+# DERIVE SECTOR INDEX: CONSTRAINED & UNCONSTRAINED
+# =====================================================
+
+# Normalisasi nilai Berbasis_Lahan (menerima "Ya"/"Tidak", "Yes"/"No", TRUE/FALSE)
+berbasis_lahan <- tolower(trimws(as.character(sector$Berbasis_Lahan)))
+
+constrained <- as.numeric(berbasis_lahan %in% c("ya", "yes", "true", "1"))
+unconstrained <- 1 - constrained
+
+# Simpan ke data frame sector sebagai kolom tambahan untuk referensi
+sector$Constrained   <- constrained
+sector$Unconstrained <- unconstrained
+
+# Ringkasan
+cat("Jumlah sektor berbasis lahan (constrained):", sum(constrained), "\n")
+cat("Jumlah sektor non-lahan (unconstrained):", sum(unconstrained), "\n")
+cat("Sektor berbasis lahan:\n")
+print(sector$Nama_Sektor[constrained == 1])
 ```
 
 ```{r create-validation-status, echo=FALSE, message=FALSE, warning=FALSE}

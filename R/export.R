@@ -250,10 +250,19 @@ save_analysis_data <- function(sector,
   format <- match.arg(format)
   
   # -----------------------------------------------
+  # Derive sector index
+  # -----------------------------------------------
+  berbasis_lahan <- tolower(trimws(as.character(sector$Berbasis_Lahan)))
+  constrained    <- as.numeric(berbasis_lahan %in% c("ya", "yes", "true", "1"))
+  unconstrained  <- 1 - constrained
+  
+  # -----------------------------------------------
   # Full combined list
   # -----------------------------------------------
   io <- list(
     sector                   = sector,
+    constrained              = constrained,
+    unconstrained            = unconstrained,
     intermediate_consumption = intermediate_consumption_m,
     final_demand             = final_demand_m,
     final_demand_component   = if (exists("final_demand_component")) final_demand_component else NULL,
