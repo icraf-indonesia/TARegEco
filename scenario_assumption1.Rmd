@@ -1,0 +1,307 @@
+---
+title: "TA Regional Economy Module - Projection Notebook"
+author: "LUMENS Developer Team"
+date: "`r Sys.Date()`"
+time: "`r format(Sys.time(), '%H:%M:%S')`"
+output: html_document
+params:
+  mode: "Scenario"         # "BAU" atau "Scenario"
+  n_scenarios: 1     # Jumlah skenario intervensi
+  scenario_name: "Proyeksi Luasan Lahan"   # nama skenario intervensi
+  initial_year: 2025
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+if (requireNamespace("TARegEco", quietly = TRUE)) {
+  library(TARegEco)
+} else {
+  devtools::load_all(".")
+}
+
+library(DT)
+library(ggplot2)
+library(plotly)
+library(dplyr)
+library(tidyr)
+library(readxl)
+
+# Load all functions from R/
+source_files <- list.files("R", pattern = "\\.R$", full.names = TRUE)
+invisible(lapply(source_files, source))
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# =====================================================
+# INPUT & PREPROCESSING
+# =====================================================
+
+descriptive_analysis_file <- "inst/extdata/output/descriptive_analysis_module.rds"
+projection_area_file_bau <- "inst/extdata/example_data/Bukecap/luc_projection_bukecap_bau.xlsx"
+
+initial_year <- params$initial_year
+
+baseline <- load_projection_baseline(
+  path = descriptive_analysis_file,
+  projection_area_file_bau = projection_area_file_bau
+)
+
+# Akses komponen baseline
+gdp_baseline      <- baseline$gdp_baseline
+leontief_matrix   <- baseline$leontief_matrix
+full_io_table     <- baseline$full_io_table
+code_registry     <- baseline$code_registry
+sector_idx        <- baseline$sector_idx
+intermediate_consumption.m <- baseline$intermediate_consumption
+income_multiplier <- baseline$income_multiplier
+labour_multiplier <- baseline$labour_multiplier
+SUB_multiplier    <- baseline$SUB_multiplier
+output_multiplier <- baseline$output_multiplier
+linkage_table     <- baseline$linkage_table
+P_default         <- baseline$P_default
+growth_rate       <- baseline$growth_rate
+area_matrix_bau   <- baseline$area_matrix_bau
+constrained       <- baseline$constrained      
+unconstrained     <- baseline$unconstrained
+
+# Index sektor berbasis lahan dan non-lahan
+no_idx            <- which(unconstrained == 1) # index sektor non-lahan
+co_idx            <- which(constrained == 1)   # index sektor berbasis lahan
+k                 <- length(no_idx)            # jumlah sektor non-lahan
+m                 <- length(co_idx)            # jumlah sektor berbasis lahan
+n                 <- nrow(gdp_baseline)        # jumlah sektor total
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# ==============================================================================
+# ASUMSI 1: PROYEKSI IO TERKENDALA PENAWARAN LAHAN (SUPPLY-CONSTRAINED MIXED I-O)
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. EKSTRAK VEKTOR DARI gdp_baseline
+# Evaluasi Teoretis:
+# Mengambil nilai awal output (X_0), PDRB/Nilai Tambah (v_0), proporsi PDRB (v_c),
+# serta Land Requirement & LPC (Land Productivity Coefficient = X_0 / L_0).
+# Sesuai dengan Hubacek & Giljum (2003) & Hubacek & Sun (2001), di mana LPC
+# didefinisikan sebagai rasio output terhadap kebutuhan lahan (p = X/L).
+# ------------------------------------------------------------------------------
+sektor_names <- gdp_baseline$SECTOR
+Y_0 <- as.numeric(gdp_baseline$FD); names(Y_0) <- sektor_names
+x_0 <- as.numeric(gdp_baseline$OUTPUT); names(x_0) <- sektor_names
+v_0 <- as.numeric(gdp_baseline$GDP); names(v_0) <- sektor_names
+v_c <- as.numeric(gdp_baseline$GDP_PROP); names(v_c) <- sektor_names
+Land_0 <- as.numeric(gdp_baseline$Land_Requirement); LPC_0 <- as.numeric(gdp_baseline$LPC)
+
+Z <- as.matrix(intermediate_consumption.m)
+rownames(Z) <- colnames(Z) <- sektor_names
+
+co_idx_lama <- co_idx
+no_idx_lama <- no_idx
+
+
+# ------------------------------------------------------------------------------
+# 2. FILTER SEKTOR DUMMY (OUTPUT = 0) & REMAP INDEX
+# Evaluasi Teoretis:
+# Pengeluaran sektor dengan Output = 0 mencegah terjadinya pembagian nol pada
+# matriks koefisien teknis A = Z / X_0 dan memastikan invertibilitas matriks.
+# Hal ini sesuai dengan syarat matematis Solusi Leontief (Miller & Blair, 2009).
+# ------------------------------------------------------------------------------
+idx_valid <- which(x_0 > 0)
+idx_drop <- which(x_0 == 0)
+
+if (length(idx_drop) > 0) {
+  cat("⚠ Sektor dikeluarkan (OUTPUT = 0):\n")
+  print(data.frame(idx = idx_drop, sektor = sektor_names[idx_drop]))
+}
+
+Z <- Z[idx_valid, idx_valid, drop = FALSE]
+x_0 <- x_0[idx_valid]
+Y_0 <- Y_0[idx_valid]
+v_0 <- v_0[idx_valid]
+v_c <- v_c[idx_valid]
+Land_0 <- Land_0[idx_valid]
+LPC_0 <- LPC_0[idx_valid]
+sektor_names <- sektor_names[idx_valid]
+n <- length(idx_valid)
+
+# Remap index sektor terkendala (co) dan tidak terkendala (no)
+co_idx <- which(idx_valid %in% co_idx_lama)
+no_idx <- which(idx_valid %in% no_idx_lama)
+stopifnot(length(co_idx) + length(no_idx) == n)
+
+
+# ------------------------------------------------------------------------------
+# 3. REKLASIFIKASI: PINDAHKAN SEKTOR co DENGAN L=0 ATAU LPC=0 KE nc
+# Evaluasi Teoretis:
+# Sektor terkendala lahan (constrained) secara konseptual mensyaratkan ketersediaan
+# input lahan fisik (L > 0) dan produktivitas positif (LPC > 0) (Hubacek & Sun, 2001).
+# Sektor tanpa lahan aktual dipindahkan ke sektor bebas (unconstrained/nc) agar
+# pemisahan partisi matriks IO valid secara ilmiah dan tidak menyebabkan kendala palsu.
+# ------------------------------------------------------------------------------
+L_0_co_cek <- Land_0[co_idx]
+p_0_co_cek <- LPC_0[co_idx]
+mask_bermasalah <- (L_0_co_cek <= 0) | (p_0_co_cek <= 0)
+
+if (any(mask_bermasalah)) {
+  cat("\n⚠ Sektor co dengan L=0 atau LPC=0 dipindahkan ke no_idx:\n")
+  print(data.frame(
+    idx_asli = co_idx[mask_bermasalah],
+    sektor = sektor_names[co_idx[mask_bermasalah]]
+  ))
+  co_idx_pindah <- co_idx[mask_bermasalah]
+  co_idx <- co_idx[!mask_bermasalah]
+  no_idx <- sort(c(no_idx, co_idx_pindah))
+}
+
+cat("\n✓ Final: co_idx =", length(co_idx), "| no_idx =", length(no_idx), "| total =", n, "\n")
+
+
+# ------------------------------------------------------------------------------
+# 4. MATRIKS A, M, DAN PARTISI
+# Evaluasi Teoretis:
+# Sesuai Miller & Blair (2009) Bab 13 & Hubacek & Sun (2001) Persamaan (3):
+# Matriks Koefisien Teknis A = Z %*% hat(X)^(-1) mengasumsikan proporsionalitas input (Leontief).
+# Matriks M = (I - A) dipartisi menjadi:
+# - M_nc_nc: Sub-matriks (I-A) antar sektor bebas/unconstrained.
+# - M_nc_co: Sub-matriks keterkaitan input sektor terkendala terhadap sektor bebas.
+# Invers solve(M_nc_nc) mengukur pengali Leontief untuk sektor-sektor bebas.
+# ------------------------------------------------------------------------------
+A <- sweep(Z, 2, x_0, "/")
+M <- diag(n) - A
+
+idx_co <- co_idx
+idx_nc <- no_idx
+
+L_0_co <- as.numeric(Land_0[idx_co])
+p_0_co <- as.numeric(LPC_0[idx_co])
+
+M_co_co <- M[idx_co, idx_co, drop = FALSE]
+M_co_nc <- M[idx_co, idx_nc, drop = FALSE]
+M_nc_co <- M[idx_nc, idx_co, drop = FALSE]
+M_nc_nc <- M[idx_nc, idx_nc, drop = FALSE]
+
+M_nc_nc_inv <- solve(M_nc_nc)
+
+cat("✓ NaN di A? ", any(is.na(A)), "\n")
+cat("✓ NaN di M_nc_co? ", any(is.na(M_nc_co)), "\n")
+cat("✓ rcond(M_nc_nc): ", round(rcond(M_nc_nc), 4), "\n")
+
+
+# ------------------------------------------------------------------------------
+# 5. PARAMETER PROYEKSI
+# Evaluasi Teoretis:
+# - `laju_teknologi_gamma <- 0`: Membekukan produktivitas lahan pada nilai baseline p_0 (LPC_0).
+# Ini mengisolasi murni efek perubahan fisik lahan (Pure Land Allocation Effect).
+# - `rate_permintaan_nc`: Mengasumsikan pertumbuhan eksogen permintaan akhir untuk sektor
+# unconstrained (demand-driven), sesuai asumsi umum model Leontief terbuka (Miller & Blair, 2009).
+# ------------------------------------------------------------------------------
+tahun <- as.numeric(colnames(area_matrix_bau)) # c(2030, 2035, 2040, 2045)
+t_max <- length(tahun)
+
+proporsi_lahan_sektor <- P_default
+laju_teknologi_gamma <- 0
+rate_permintaan_nc <- growth_rate
+initial_year <- 2025
+
+
+# ------------------------------------------------------------------------------
+# 6. ITERASI PROYEKSI (PEMODELAN MIXED I-O TERKENDALA LAHAN)
+# Evaluasi Teoretis:
+# - Bagian B & C: Menghitung total lahan L_co_t = P_default[idx_co, ] %*% tutupan_lahan_t
+# dan output sektor terkendala x_co_t = L_co_t * p_0_co.
+# Output sektor berbasis lahan tidak ditentukan oleh permintaan pasar melainkan
+# dibatasi oleh ketersediaan lahan biofisik (Hubacek & Sun, 2001).
+# - Bagian D: Memproyeksikan permintaan akhir sektor bebas Y_nc_t = Y_0 * (1 + r)^t.
+# - Bagian E: Menghitung solusi simultan Mixed I-O:
+# rhs = Y_nc_t - M_nc_co %*% x_co_t
+# x_nc_t = M_nc_nc_inv %*% rhs
+# Formulasi ini 100% identik secara matematis dengan Persamaan (3) Hubacek & Sun (2001)
+# dan Bab 13.2.4 Miller & Blair (2009) untuk Mixed Exogenous-Endogenous Models.
+# - Bagian F: PDRB_sektoral = v_c * x_t, di mana v_c (GDP_PROP) dianggap konstan
+# mengikuti asumsi linieritas dan proporsionalitas nilai tambah (BPS 2016, Miller & Blair 2009).
+# ------------------------------------------------------------------------------
+df_proyeksi <- data.frame(
+  Tahun = integer(t_max),
+  PDRB_Total_Juta = numeric(t_max),
+  Output_Total_Juta = numeric(t_max)
+)
+
+for (i in 1:n) {
+  df_proyeksi[[paste0("Output_", i)]] <- numeric(t_max)
+  df_proyeksi[[paste0("PDRB_", i)]] <- numeric(t_max)
+}
+
+for (k in 1:t_max) {
+  yr <- tahun[k]
+  
+  # A. Vektor luas tutupan lahan tahun k
+  luas_tutupan_t <- area_matrix_bau[, k]
+  
+  # B. Hitung Total Luas Lahan Sektor Terkendala (17 Sektor)
+  L_co_t <- as.vector(P_default[idx_co, ] %*% luas_tutupan_t)
+  
+  # C. Output Sektor Terkendala Lahan (x_co_t) = L_co_t * p_0_co (Vektor Kolom 17x1)
+  x_co_t <- matrix(L_co_t * p_0_co, ncol = 1)
+  
+  # D. Permintaan Akhir Sektor Non-Lahan (Y_nc_t)
+  selisih_tahun <- yr - initial_year
+  Y_nc_t <- Y_0[idx_nc] * ((1 + rate_permintaan_nc[idx_nc]) ^ selisih_tahun)
+  
+  # E. Solusi Mixed IO Model untuk Sektor Non-Lahan
+  rhs <- Y_nc_t - (M_nc_co %*% x_co_t)
+  x_nc_t <- M_nc_nc_inv %*% rhs
+  
+  # F. Rekonstruksi Output & PDRB Total
+  x_t <- numeric(n)
+  x_t[idx_co] <- as.vector(x_co_t)
+  x_t[idx_nc] <- as.vector(x_nc_t)
+  
+  PDRB_sektoral_t <- v_c * x_t
+  PDRB_total_t <- sum(PDRB_sektoral_t)
+  
+  # G. Menyimpan Hasil Iterasi ke df_proyeksi
+  df_proyeksi$Tahun[k] <- yr
+  df_proyeksi$PDRB_Total_Juta[k] <- PDRB_total_t
+  df_proyeksi$Output_Total_Juta[k] <- sum(x_t)
+  
+  for (i in 1:n) {
+    df_proyeksi[[paste0("Output_", i)]][k] <- x_t[i]
+    df_proyeksi[[paste0("PDRB_", i)]][k] <- PDRB_sektoral_t[i]
+  }
+}
+
+
+# ------------------------------------------------------------------------------
+# 7. VERIFIKASI REKONSILIASI TAHUN BASIS (t=0)
+# Evaluasi Teoretis:
+# Menguji apakah pada t=0 proyeksi menghasilkan nilai yang persis sama dengan PDRB baseline.
+# Ini memastikan bahwa model tidak memiliki bias kalibrasi internal (consistency test).
+# ------------------------------------------------------------------------------
+cat("\n--- VERIFIKASI REKONSILIASI TAHUN BASIS ---\n")
+cat("PDRB proyeksi t=0 :", df_proyeksi$PDRB_Total_Juta[1], "Juta Rp\n")
+cat("PDRB baseline :", sum(v_0), "Juta Rp\n")
+cat("Rasio :", round(df_proyeksi$PDRB_Total_Juta[1] / sum(v_0), 6), "\n")
+cat("Output proyeksi :", df_proyeksi$Output_Total_Juta[1], "\n")
+cat("Output baseline :", sum(x_0), "\n")
+
+cat("\n--- TABEL HASIL PROYEKSI ---\n")
+print(df_proyeksi[, c("Tahun", "PDRB_Total_Juta", "Output_Total_Juta")])
+
+
+# ------------------------------------------------------------------------------
+# 8. VISUALISASI
+# ------------------------------------------------------------------------------
+p1 <- ggplot(df_proyeksi, aes(x = Tahun, y = PDRB_Total_Juta / 1e6)) +
+  geom_line(color = "blue", linewidth = 1.2) +
+  geom_point(color = "red", size = 3) +
+  labs(
+    title = paste0("Proyeksi PDRB Regional (", min(tahun), "-", max(tahun), ")"),
+    subtitle = "Model Input-Output Terkendala Penawaran Lahan (Asumsi 1)",
+    x = "Tahun",
+    y = "Total PDRB (Triliun Rp)"
+  ) +
+  theme_minimal()
+
+print(p1)
+```
