@@ -150,26 +150,30 @@ get_intensity <- function(intensity_table, sector, period_start, period_end) {
   return(row$Intensity[1])
 }
 
-#' Run projection
+#' Run projection (Supply-Constrained Mixed Input-Output Model)
 #'
-#' Main projection function that simulates regional economic indicators over
-#' time based on Input-Output data and scenario inputs.
+#' Simulates regional economic indicators over time using a supply-constrained
+#' mixed input-output model. Land-constrained (co) sectors are driven by
+#' land availability × land productivity coefficient (LPC), while
+#' non-land (nc) sectors are solved via Leontief inverse.
 #'
 #' @param gdp_baseline Data frame. Baseline GDP table from descriptive analysis.
-#' @param income_multiplier Data frame. Income multiplier table.
-#' @param labour_multiplier Data frame. Labour multiplier table.
-#' @param SUB_multiplier Data frame. Gross operating surplus multiplier table.
-#' @param output_multiplier Data frame. Output multiplier table.
+#' @param income_multiplier Data frame. Income multiplier table (kolom Labour_Compensation).
+#' @param labour_multiplier Data frame. Labour multiplier table (kolom Labour).
+#' @param SUB_multiplier Data frame. SUB multiplier table (kolom Surplus).
+#' @param output_multiplier Data frame. Output multiplier table (unused in this model).
 #' @param linkage_table Data frame. Linkage table with ITFL and ITBL.
-#' @param leontief_matrix Numeric matrix. Baseline Leontief inverse.
-#' @param full_io_table Numeric matrix. Complete IO table.
+#' @param leontief_matrix Numeric matrix. Baseline Leontief inverse (unused here).
+#' @param full_io_table Numeric matrix. Complete IO table (Z matrix).
 #' @param sector_idx Integer vector. Sector indices in full IO table.
-#' @param P Numeric matrix. Land proportion matrix.
-#' @param area_matrix Numeric matrix. Land area matrix (IDs x years).
-#' @param growth_rate Data frame. Growth rate data.
+#' @param P Numeric matrix. Land proportion matrix [n_sektor × n_tutupan].
+#' @param area_matrix Numeric matrix. Land area matrix [n_tutupan × n_tahun].
+#' @param growth_rate Numeric vector. Growth rate permintaan akhir per sektor.
 #' @param lpc_scenario Data frame or `NULL`. LPC scenario inputs.
 #' @param io_changes Data frame or `NULL`. IO change scenarios.
 #' @param intensity_table Data frame or `NULL`. Intensity scenarios.
+#' @param constrained Integer vector. Indikator sektor co (1 = constrained).
+#' @param unconstrained Integer vector. Indikator sektor nc (1 = unconstrained).
 #'
 #' @return A data frame with projected indicators for all sectors and years.
 #'
@@ -187,170 +191,225 @@ run_projection <- function(
     P,
     area_matrix,
     growth_rate,
-    lpc_scenario = NULL,
-    io_changes = NULL,
-    intensity_table = NULL
+    lpc_scenario    = NULL,
+    io_changes      = NULL,
+    intensity_table = NULL,
+    constrained     = NULL,
+    unconstrained   = NULL
 ) {
+  
+  # ============================================================================
+  # 1. PERSIAPAN DIMENSI & VEKTOR BASELINE
+  # ============================================================================
   
   years <- as.numeric(colnames(area_matrix))
   years <- sort(years)
+  t_max <- length(years)
   
   if (length(years) > 1) {
     time_step <- years[2] - years[1]
-  }
-  
-  periods_df <- create_period_table(
-    initial_year = years[1] - time_step,
-    end_year = years[length(years)],
-    time_step = time_step
-  )
-  
-  current_prop_fd   <- as.numeric(gdp_baseline$Prop_FD)
-  current_lpc       <- as.numeric(gdp_baseline$LPC)
-  output_baseline   <- as.numeric(gdp_baseline$OUTPUT)
-  gdp_prop          <- as.numeric(gdp_baseline$GDP_PROP)
-  income_coeff      <- as.numeric(income_multiplier$Inc.multiplier)
-  labour_coeff      <- as.numeric(labour_multiplier$Lab.multiplier)
-  labour_compensation <- as.numeric(labour_multiplier$Labour_Compensation)
-  labour_baseline   <- as.numeric(labour_multiplier$Labour)
-  sub_coeff         <- as.numeric(SUB_multiplier$SUB.multiplier)
-  surplus_baseline  <- as.numeric(SUB_multiplier$Surplus)
-  output_coeff      <- as.numeric(output_multiplier$Out.multiplier)
-  itfl_coeff        <- linkage_table$ITFL
-  itbl_coeff        <- linkage_table$ITBL
-  
-  if (!is.null(growth_rate) && length(growth_rate) > 0) {
-    r <- as.numeric(growth_rate)
-    if (length(r) != nrow(gdp_baseline)) {
-      warning("Panjang growth_rate tidak sesuai jumlah sektor. Menggunakan default 3%.")
-      r <- rep(0.03, nrow(gdp_baseline))
-    }
   } else {
-    r <- rep(0.03, nrow(gdp_baseline))
+    time_step <- 1
   }
   
-  current_labour <- labour_baseline
+  initial_year <- if (!is.null(getOption("initial_year"))) {
+    getOption("initial_year")
+  } else {
+    years[1] - time_step
+  }
   
-  prop_labour <- output_baseline / labour_baseline
-  prop_labour[!is.finite(prop_labour)] <- 0
+  # Ekstrak vektor dari gdp_baseline
+  sektor_names <- as.character(unlist(gdp_baseline$SECTOR))
+  Y_0          <- as.numeric(unlist(gdp_baseline$FD));          names(Y_0)    <- sektor_names
+  x_0          <- as.numeric(unlist(gdp_baseline$OUTPUT));      names(x_0)    <- sektor_names
+  v_0          <- as.numeric(unlist(gdp_baseline$GDP));         names(v_0)    <- sektor_names
+  Land_0       <- as.numeric(unlist(gdp_baseline$Land_Requirement))
+  LPC_0        <- as.numeric(unlist(gdp_baseline$LPC))
   
-  growth_factor <- (1 + r)^time_step
+  # Z matrix (intermediate consumption)
+  Z <- as.matrix(full_io_table)
+  storage.mode(Z) <- "numeric"
+  rownames(Z) <- colnames(Z) <- sektor_names
   
-  previous_output <- output_baseline
-  current_leontief <- leontief_matrix
-  current_io_table <- full_io_table
+  # Filter sektor dummy (X_0 = 0)
+  idx_valid    <- which(x_0 > 0)
+  Z            <- Z[idx_valid, idx_valid, drop = FALSE]
+  x_0          <- x_0[idx_valid]
+  Y_0          <- Y_0[idx_valid]
+  v_0          <- v_0[idx_valid]
+  Land_0       <- Land_0[idx_valid]
+  LPC_0        <- LPC_0[idx_valid]
+  sektor_names <- sektor_names[idx_valid]
+  n            <- length(idx_valid)
   
-  results <- list()
+  # Koefisien input primer (proporsi terhadap output baseline)
+  v_c <- as.numeric(unlist(gdp_baseline$GDP_PROP))[idx_valid]
   
-  for (yr_idx in seq_along(years)) {
-    year <- years[yr_idx]
+  w_c <- as.numeric(unlist(labour_multiplier$Labour_Compensation))[idx_valid] / x_0
+  l_c <- as.numeric(unlist(labour_multiplier$Labour))[idx_valid] / x_0
+  sub_c <- as.numeric(unlist(SUB_multiplier$Surplus))[idx_valid] / x_0
+  
+  # Growth rate per sektor
+  growth_rate <- as.numeric(unlist(growth_rate))
+  if (length(growth_rate) != nrow(gdp_baseline)) {
+    warning("Panjang growth_rate tidak sesuai. Gunakan default 0.")
+    growth_rate <- rep(0, nrow(gdp_baseline))
+  }
+  growth_rate <- growth_rate[idx_valid]
+  
+  # ============================================================================
+  # 2. IDENTIFIKASI SEKTOR CO & NC
+  # ============================================================================
+  
+  # Kalau constrained/unconstrained tidak diberikan, deteksi dari LPC > 0
+  if (is.null(constrained) || is.null(unconstrained)) {
+    constrained   <- as.integer(LPC_0 > 0 & Land_0 > 0)
+    unconstrained <- as.integer(!(LPC_0 > 0 & Land_0 > 0))
+  }
+  
+  co_idx <- which(idx_valid %in% which(constrained == 1))
+  no_idx <- which(idx_valid %in% which(unconstrained == 1))
+  
+  # Reklasifikasi: sektor co dengan L=0 atau LPC=0 → pindah ke nc
+  mask_bermasalah <- (Land_0[co_idx] <= 0) | (LPC_0[co_idx] <= 0)
+  
+  if (any(mask_bermasalah)) {
+    co_idx_pindah <- co_idx[mask_bermasalah]
+    co_idx        <- co_idx[!mask_bermasalah]
+    no_idx        <- sort(c(no_idx, co_idx_pindah))
+  }
+  
+  idx_co <- co_idx
+  idx_nc <- no_idx
+  p_0_co <- as.numeric(LPC_0[idx_co])
+  m      <- length(idx_co)
+  
+  # ============================================================================
+  # 3. FORMULASI MATRIKS LEONTIEF & SUB-PARTISI
+  # ============================================================================
+  
+  A_full <- sweep(Z, 2, x_0, "/")
+  M_full <- diag(n) - A_full
+  B_full <- solve(M_full)
+  
+  # Indeks keterkaitan (ITBL & ITFL)
+  col_sum_B   <- colSums(B_full)
+  row_sum_B   <- rowSums(B_full)
+  total_sum_B <- sum(B_full)
+  
+  ITBL_vector <- (n * col_sum_B) / total_sum_B
+  ITFL_vector <- (n * row_sum_B) / total_sum_B
+  
+  # Sub-partisi M
+  M_nc_co     <- M_full[idx_nc, idx_co, drop = FALSE]
+  M_nc_nc     <- M_full[idx_nc, idx_nc, drop = FALSE]
+  M_nc_nc_inv <- solve(M_nc_nc)
+  
+  # P matrix untuk sektor co: [n_co × n_tutupan]
+  P_sub <- as.matrix(P[idx_co, , drop = FALSE])
+  storage.mode(P_sub) <- "numeric"
+  
+  # ============================================================================
+  # 4. ITERASI PROYEKSI MULTI-INDIKATOR
+  # ============================================================================
+  
+  x_out             <- matrix(0, nrow = t_max, ncol = n)
+  PDRB_sektoral     <- matrix(0, nrow = t_max, ncol = n)
+  Inc_sektoral      <- matrix(0, nrow = t_max, ncol = n)
+  Lab_sektoral      <- matrix(0, nrow = t_max, ncol = n)
+  SUB_sektoral      <- matrix(0, nrow = t_max, ncol = n)
+  L_co_matrix       <- matrix(0, nrow = t_max, ncol = m)
+  LPC_growth_matrix <- matrix(0, nrow = t_max, ncol = m)
+  
+  # LPC dinamis untuk skenario
+  current_lpc_co <- p_0_co   # salinan, akan diupdate tiap tahun
+  
+  for (k in seq_len(t_max)) {
+    yr             <- years[k]
+    selisih_tahun  <- yr - initial_year
     
-    period_row <- periods_df[periods_df$End_Year == year, ]
-    if (nrow(period_row) == 0) next
-    p_start <- period_row$Start_Year
-    p_end   <- period_row$End_Year
+    # --- A. Permintaan akhir sektor nc (eksogen) ---
+    Y_nc_t <- Y_0[idx_nc] * ((1 + growth_rate[idx_nc]) ^ selisih_tahun)
     
-    current_io_table <- apply_io_changes(current_io_table, io_changes, p_start, p_end)
-    current_leontief <- recalculate_leontief(current_io_table, sector_idx, output_baseline)
-    
-    area_t <- area_matrix[, as.character(year), drop = FALSE]
-    
-    if (ncol(P) == length(area_t)) {
-      land_req_t <- as.numeric(P %*% area_t)
-    } else if (nrow(P) == length(area_t)) {
-      land_req_t <- as.numeric(t(P) %*% area_t)
-    } else {
-      stop("Dimensi P tidak cocok dengan area_t")
-    }
-    land_req_t[land_req_t <= 0] <- NA
-    
-    lpc_gr_vec <- rep(0, length(current_lpc))
-    
+    # --- B. Update LPC per sektor co (jika ada lpc_scenario) ---
+    lpc_gr_vec <- rep(0, m)
     if (!is.null(lpc_scenario)) {
-      for (s in seq_along(current_lpc)) {
-        sector_code <- gdp_baseline$Sector_Code[s]
-        lpc_gr <- calculate_lpc_growth_rate(lpc_scenario, sector_code, yr_idx, periods_df)
-        lpc_gr_vec[s] <- lpc_gr
-        current_lpc[s] <- current_lpc[s] + (current_lpc[s] * lpc_gr)
+      for (j in seq_along(idx_co)) {
+        sector_code <- gdp_baseline$Sector_Code[idx_co[j]]
+        lpc_gr <- calculate_lpc_growth_rate(
+          lpc_scenario, sector_code, k,
+          data.frame(Start_Year = yr, End_Year = yr)
+        )
+        lpc_gr_vec[j] <- lpc_gr
+        current_lpc_co[j] <- current_lpc_co[j] * (1 + lpc_gr)
       }
     }
-    current_lpc[!is.finite(current_lpc)] <- 0
-    lpc_gr_vec[!is.finite(lpc_gr_vec)] <- 0
+    current_lpc_co[!is.finite(current_lpc_co)] <- 0
     
-    fd_t <- land_req_t * current_prop_fd * current_lpc * growth_factor
-    fd_t[is.na(fd_t)] <- 0
+    # --- C. Output sektor co dibatasi lahan ---
+    luas_tutupan_t <- as.numeric(unlist(area_matrix[, k]))   # [n_tutupan]
+    L_co_t         <- as.vector(P_sub %*% luas_tutupan_t)    # [n_co]
+    x_co_t         <- matrix(L_co_t * current_lpc_co, ncol = 1)   # [n_co × 1]
     
-    intensity_vec <- sapply(seq_along(fd_t), function(s) {
-      get_intensity(intensity_table, gdp_baseline$Sector_Code[s], p_start, p_end)
-    })
+    # --- D. Mixed IO solve untuk sektor nc ---
+    rhs    <- Y_nc_t - (M_nc_co %*% x_co_t)
+    x_nc_t <- M_nc_nc_inv %*% rhs
     
-    fd_baseline <- as.numeric(gdp_baseline$FD)
-    fd_effective <- fd_baseline + intensity_vec * (fd_t - fd_baseline)
-    fd_effective[!is.finite(fd_effective)] <- 0
-    fd_effective[fd_effective < 0] <- 0
+    # --- E. Rekonstruksi output total ---
+    x_t             <- numeric(n)
+    x_t[idx_co]     <- as.vector(x_co_t)
+    x_t[idx_nc]     <- as.vector(x_nc_t)
     
-    output_t <- as.numeric(current_leontief %*% matrix(fd_effective))
+    # --- F. Multi-indikator ---
+    PDRB_sektoral[k, ] <- v_c * x_t
+    Inc_sektoral[k, ]  <- w_c * x_t
+    Lab_sektoral[k, ]  <- l_c * x_t
+    SUB_sektoral[k, ]  <- sub_c * x_t
+    x_out[k, ]         <- x_t
+    L_co_matrix[k, ]   <- L_co_t
+    LPC_growth_matrix[k, ] <- lpc_gr_vec
+  }
+  
+  # ============================================================================
+  # 5. REKAPITULASI HASIL DALAM FORMAT TIBBLE (PER TAHUN × SEKTOR)
+  # ============================================================================
+  
+  # Bangun hasil per (tahun × sektor)
+  results_list <- list()
+  
+  for (k in seq_len(t_max)) {
+    yr <- years[k]
     
-    gdp_t <- output_t * gdp_prop
+    # Vektor per sektor (panjang n)
+    land_req_t      <- numeric(n)
+    land_req_t[idx_co] <- L_co_matrix[k, ]
+    land_req_t[idx_nc] <- 0   # sektor nc tidak pakai lahan
     
-    projected_compensation <- income_coeff * output_baseline
-    prop_compensation <- labour_compensation / projected_compensation
-    prop_compensation[!is.finite(prop_compensation)] <- 0
-    income_t <- output_t * income_coeff * prop_compensation
+    lpc_growth_t      <- numeric(n)
+    lpc_growth_t[idx_co] <- LPC_growth_matrix[k, ]
     
-    add <- (output_t / prop_labour) * labour_coeff
-    add[!is.finite(add)] <- 0
-    labour_t <- current_labour + add
+    # LPC per sektor (hanya co yang > 0)
+    lpc_t      <- numeric(n)
+    lpc_t[idx_co] <- current_lpc_co  # setelah update
     
-    projected_SUB <- sub_coeff * output_baseline
-    prop_SUB <- surplus_baseline / projected_SUB
-    prop_SUB[!is.finite(prop_SUB)] <- 0
-    surplus_t <- output_t * sub_coeff * prop_SUB
-    
-    output_ratio <- output_t / previous_output
-    output_ratio[!is.finite(output_ratio)] <- 1
-    output_multiplier_t <- output_ratio * output_coeff
-    
-    itfl_t <- itfl_coeff * (land_req_t / gdp_baseline$Land_Requirement)
-    itbl_t <- itbl_coeff * (land_req_t / gdp_baseline$Land_Requirement)
-    itfl_t[!is.finite(itfl_t)] <- 0
-    itbl_t[!is.finite(itbl_t)] <- 0
-    
-    prop_fd_t <- fd_t / output_t
-    prop_fd_t[!is.finite(prop_fd_t)] <- 0
-    
-    lpc_t <- output_t / land_req_t
-    lpc_t[!is.finite(lpc_t)] <- 0
-    
-    current_prop_fd <- prop_fd_t
-    current_lpc <- lpc_t
-    previous_output <- output_t
-    current_labour <- labour_t
-    
-    results[[as.character(year)]] <- tibble::tibble(
-      YEAR = year,
-      SECTOR = gdp_baseline$SECTOR,
-      CATEGORY = gdp_baseline$CATEGORY,
+    results_list[[as.character(yr)]] <- tibble::tibble(
+      YEAR             = yr,
+      SECTOR           = sektor_names,
       LAND_REQUIREMENT = land_req_t,
-      LPC_GROWTH_RATE  = lpc_gr_vec,
-      LPC = lpc_t,
-      LPC_NEW = lpc_t + (lpc_t * lpc_gr_vec),
-      FD = fd_t,
-      FD_EFFECTIVE = fd_effective,
-      INTENSITY = intensity_vec,
-      PROP_FD = prop_fd_t,
-      OUTPUT = output_t,
-      GDP = gdp_t,
-      INCOME = income_t,
-      LABOUR = labour_t,
-      SURPLUS = surplus_t,
-      OUTPUT_MULTIPLIER = output_multiplier_t,
-      ITFL = itfl_t,
-      ITBL = itbl_t
+      LPC              = lpc_t,
+      LPC_GROWTH_RATE  = lpc_growth_t,
+      FD               = Y_0,                     # permintaan akhir baseline
+      OUTPUT           = x_out[k, ],
+      GDP              = PDRB_sektoral[k, ],
+      INCOME           = Inc_sektoral[k, ],
+      LABOUR           = Lab_sektoral[k, ],
+      SURPLUS          = SUB_sektoral[k, ],
+      ITBL             = ITBL_vector,
+      ITFL             = ITFL_vector
     )
   }
   
-  final_result <- do.call(rbind, results)
+  final_result <- do.call(rbind, results_list)
   final_result <- final_result |>
     dplyr::mutate(
       dplyr::across(
