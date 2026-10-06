@@ -5,10 +5,8 @@ date: "`r Sys.Date()`"
 time: "`r format(Sys.time(), '%H:%M:%S')`"
 output: html_document
 params:
-  mode: "Scenario"                          # "BAU" atau "Scenario"
-  n_scenarios: 1                            # Jumlah skenario intervensi
   scenario_name: "Proyeksi Luasan Lahan"    # Nama skenario intervensi
-  initial_year: 2024
+  initial_year: 2025
 ---
 
 ```{r setup, include=FALSE}
@@ -253,18 +251,23 @@ sektor_names <- sektor_names[idx_valid]
 n            <- length(idx_valid)
 
 # ------------------------------------------------------------------------------
-# 3. EKSTRAKSI KOEFISIEN INPUT PRIMER (w_c, l_c, sub_c)
+# 3. EKSTRAKSI KOEFISIEN INPUT PRIMER LANGSUNG (KOREKSI BENAR)
 # ------------------------------------------------------------------------------
-v_c <- as.numeric(unlist(gdp_baseline$GDP_PROP))[idx_valid] # Proporsi PDRB
 
-# Proporsi Pendapatan Tenaga Kerja (w_c)
-w_c <- as.numeric(unlist(baseline$income_multiplier$Inc.multiplier))[idx_valid] / x_0
+# A. Koefisien Proporsi PDRB / GDP (v_c)
+v_c <- as.numeric(unlist(gdp_baseline$GDP_PROP))[idx_valid]
 
-# Proporsi Serapan Tenaga Kerja (l_c: Orang / Juta Rp)
-l_c <- as.numeric(unlist(baseline$labour_multiplier$Lab.multiplier))[idx_valid] / x_0
+# B. Koefisien Pendapatan Tenaga Kerja Langsung (w_c)
+# (Kompensasi Gaji & Upah Nominal / Output Baseline)
+w_c <- as.numeric(unlist(baseline$labour_multiplier$Labour_Compensation))[idx_valid] / x_0
 
-# Proporsi Surplus Usaha Bruto (sub_c)
-sub_c <- as.numeric(unlist(baseline$SUB_multiplier$SUB.multiplier))[idx_valid] / x_0
+# C. Koefisien Serapan Tenaga Kerja Langsung (l_c)
+# (Jumlah Fisik Tenaga Kerja [Jiwa] / Output Baseline) -> Satuan: Orang / Juta Rp
+l_c <- as.numeric(unlist(baseline$labour_multiplier$Labour))[idx_valid] / x_0
+
+# D. Koefisien Surplus Usaha Bruto Langsung (sub_c)
+# (Nilai Surplus Usaha Nominal / Output Baseline)
+sub_c <- as.numeric(unlist(baseline$SUB_multiplier$Surplus))[idx_valid] / x_0
   
 # Remap index sektor terkendala/constrained (co) dan unconstrained (no)
 co_idx <- which(idx_valid %in% which(constrained == 1))
@@ -306,6 +309,7 @@ M_nc_nc_inv <- solve(M_nc_nc)
 tahun        <- as.numeric(colnames(area_matrix_bau))
 t_max        <- length(tahun)
 initial_year <- if (exists("params") && !is.null(params$initial_year)) params$initial_year else 2025
+
 
 # ------------------------------------------------------------------------------
 # 6. FUNGSI ITERASI PROYEKSI MULTI-INDIKATOR
