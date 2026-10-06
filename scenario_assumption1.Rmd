@@ -8,7 +8,7 @@ params:
   mode: "Scenario"                          # "BAU" atau "Scenario"
   n_scenarios: 1                            # Jumlah skenario intervensi
   scenario_name: "Proyeksi Luasan Lahan"    # Nama skenario intervensi
-  initial_year: 2025
+  initial_year: 2024
 ---
 
 ```{r setup, include=FALSE}
@@ -41,6 +41,8 @@ invisible(lapply(source_files, source))
 
 # --- 1.1 Path File Input ------------------------------------------------------
 descriptive_analysis_file        <- "inst/extdata/output/descriptive_analysis_module.rds"
+# projection_area_file_bau         <- "inst/extdata/example_data/Padagimo/luc_projection_padagimo_bau_baseline.xlsx"
+# projection_area_file_scenario1   <- "inst/extdata/example_data/Padagimo/luc_projection_padagimo_gbp.xlsx"
 projection_area_file_bau         <- "inst/extdata/example_data/Bukecap/luc_projection_bukecap_bau.xlsx"
 projection_area_file_scenario1   <- "inst/extdata/example_data/Bukecap/luc_projection_bukecap_scenario1.xlsx"
 
@@ -83,6 +85,49 @@ projection_long_scenario1 <- projection_area_scenario1 |>
 
 area_matrix_scenario1 <- create_area_matrix(projection_long_scenario1)
 
+# Cek apakah ada sheet "land_proportion" di file skenario 1
+sheet_names_s1 <- readxl::excel_sheets(projection_area_file_scenario1)
+P_default_scenario1 <- NULL   # default: gunakan P_default baseline
+
+if ("land_proportion" %in% sheet_names_s1) {
+  cat("✓ Sheet 'land_proportion' ditemukan\n")
+
+  df_land_prop_s1 <- readxl::read_excel(
+    projection_area_file_scenario1,
+    sheet = "land_proportion"
+  )
+
+  # Struktur sheet:
+  #   - Baris   = sektor (61 baris)
+  #   - Kolom 1 = label sektor (karakter)
+  #   - Kolom 2..N = tutupan lahan (73 kolom)
+  # Target P_default_scenario1: [61 sektor × 73 tutupan] — SAMA dengan P_default
+
+  if (is.character(df_land_prop_s1[[1]]) || is.factor(df_land_prop_s1[[1]])) {
+    # Kolom 1 = label sektor → keluarkan
+    P_default_scenario1 <- as.matrix(df_land_prop_s1[, -1])
+    rownames(P_default_scenario1) <- as.character(df_land_prop_s1[[1]])
+  } else {
+    # Tidak ada kolom label
+    P_default_scenario1 <- as.matrix(df_land_prop_s1)
+  }
+  storage.mode(P_default_scenario1) <- "numeric"
+
+  # Set colnames = nama tutupan lahan (dari header sheet)
+  colnames(P_default_scenario1) <- colnames(df_land_prop_s1)[-1]
+
+  cat("  Dimensi:", nrow(P_default_scenario1), "×",
+      ncol(P_default_scenario1), "\n")
+
+  # ⚠ Kalau ternyata hasilnya 73 × 61 (transpose), berarti orientasi sheet
+  #    berbeda dari asumsi → perlu transpose
+  if (nrow(P_default_scenario1) == ncol(P_default) &&
+      ncol(P_default_scenario1) == nrow(P_default)) {
+    cat("  ⚠ Orientasi terbalik → transpose\n")
+    P_default_scenario1 <- t(P_default_scenario1)
+  }
+}
+
 # --- 1.4 Index Sektor ---------------------------------------------------------
 no_idx <- which(unconstrained == 1)   # sektor non-lahan (unconstrained)
 co_idx <- which(constrained   == 1)   # sektor berbasis lahan (constrained)
@@ -96,70 +141,137 @@ cat("  Sektor co (co_idx):", m, "\n")
 cat("  Sektor nc (no_idx):", k, "\n")
 ```
 
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
+```{r skenario1-multi-indikator, echo=FALSE, message=FALSE, warning=FALSE}
 # ==============================================================================
-# 2. SKENARIO 1: PROYEKSI KOMPARATIF PDRB (BAU vs SKENARIO 1)
-#    Berbasis Supply-Constrained Mixed Input-Output Model
-#    Referensi: Hubacek & Sun (2001); Miller & Blair (2009, Bab 13)
+# SKENARIO 1: PROYEKSI MULTI-INDIKATOR MAKROEKONOMI & KETERKAITAN SEKTOR LAHAN
+# Berbasis Supply-Constrained Mixed Input-Output Model
+# Referensi: Hubacek & Sun (2001); Miller & Blair (2009, Bab 12 & 13); Ten Raa (2005)
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
-# 2.1 PERSIAPAN MATRIKS LAHAN & PROPORSI
+# 1. SANITASI TIPE DATA UTAMA & PARAMETER BASELINE
 # ------------------------------------------------------------------------------
-# area_matrix_bau          : matriks tutupan lahan BAU (26 tutupan x t_max tahun)
-# area_matrix_scenario1    : matriks tutupan lahan Skenario 1
-# P_default                : matriks proporsi alokasi tutupan lahan → 17 sektor co
-# P_default_scenario1      : matriks proporsi skenario 1 (fallback ke P_default)
 
-if (!exists("P_default_scenario1") || is.null(P_default_scenario1)) {
-  P_default_scenario1 <- P_default
+# A. Laju Pertumbuhan Permintaan Akhir (growth_rate)
+growth_rate <- as.numeric(unlist(baseline$growth_rate))
+
+# --- B. Matriks Proporsi Sektor Lahan BAU (P_default) ------------------------
+# P_default: [n_sektor × n_tutupan] = 61 × 73  → TIDAK perlu transpose
+P_default <- as.matrix(baseline$P_default)
+storage.mode(P_default) <- "numeric"
+
+# Set nama baris = sektor (jika belum ada)
+if (is.null(rownames(P_default))) {
+  rownames(P_default) <- as.character(unlist(gdp_baseline$SECTOR))
 }
 
-# ------------------------------------------------------------------------------
-# 2.2 EKSTRAK VEKTOR DARI gdp_baseline & FILTER DATA DUMMY
-# Vektor yang diekstrak dari gdp_baseline:
-#   Y_0     = permintaan akhir baseline
-#   x_0     = output baseline/nilai awal output
-#   v_0     = PDRB/nilai tambah baseline
-#   v_c     = proporsi PDRB per sektor (v_0 / x_0)
-#   Land_0  = luas lahan baseline (ha)
-#   LPC_0   = land productivity coefficient baseline (LPC_0 = X_0 / L_0, satuan Juta Rp/ha)
-#
-# Sektor dummy dengan X_0 = 0 dikeluarkan untuk menghindari pembagian nol pada pembentukan matriks A = Z * hat(X)^(-1).
-# ------------------------------------------------------------------------------
-sektor_names <- gdp_baseline$SECTOR
-Y_0     <- as.numeric(gdp_baseline$FD);              names(Y_0)    <- sektor_names
-x_0     <- as.numeric(gdp_baseline$OUTPUT);          names(x_0)    <- sektor_names
-v_0     <- as.numeric(gdp_baseline$GDP);             names(v_0)    <- sektor_names
-v_c     <- as.numeric(gdp_baseline$GDP_PROP);        names(v_c)    <- sektor_names
-Land_0  <- as.numeric(gdp_baseline$Land_Requirement)
-LPC_0   <- as.numeric(gdp_baseline$LPC)
+cat("✓ P_default:", nrow(P_default), "sektor ×", ncol(P_default), "tutupan\n")
 
-Z <- as.matrix(intermediate_consumption.m)
-rownames(Z) <- colnames(Z) <- sektor_names
+# --- C. Matriks Proporsi Sektor Lahan Skenario 1 (P_default_scenario1) -------
+if (!exists("P_default_scenario1") || is.null(P_default_scenario1)) {
+  cat("ℹ P_default_scenario1 tidak tersedia → gunakan P_default baseline\n")
+  P_default_scenario1 <- P_default
+} else {
+  P_default_scenario1 <- as.matrix(P_default_scenario1)
+  storage.mode(P_default_scenario1) <- "numeric"
 
-idx_valid <- which(x_0 > 0)
+  # Cek dimensi — kalau terbalik, transpose
+  if (nrow(P_default_scenario1) != nrow(P_default) ||
+      ncol(P_default_scenario1) != ncol(P_default)) {
+    if (nrow(P_default_scenario1) == ncol(P_default) &&
+        ncol(P_default_scenario1) == nrow(P_default)) {
+      cat("⚠ P_default_scenario1 orientasi terbalik → transpose\n")
+      P_default_scenario1 <- t(P_default_scenario1)
+    } else {
+      stop("Dimensi P_default_scenario1 tidak cocok dengan P_default")
+    }
+  }
+
+  cat("✓ P_default_scenario1:", nrow(P_default_scenario1),
+      "sektor ×", ncol(P_default_scenario1), "tutupan\n")
+}
+
+# --- SINKRONISASI NAMA P_default & P_default_scenario1 -----------------------
+# (Letakkan TEPAT SETELAH C, SEBELUM D)
+if (!is.null(P_default_scenario1)) {
+  # Cek dimensi cocok
+  stopifnot(nrow(P_default_scenario1) == nrow(P_default))
+  stopifnot(ncol(P_default_scenario1) == ncol(P_default))
+
+  # Samakan nama
+  rownames(P_default_scenario1) <- rownames(P_default)
+  colnames(P_default_scenario1) <- colnames(P_default)
+
+  cat("✓ P_default & P_default_scenario1 sinkron:",
+      nrow(P_default), "sektor ×", ncol(P_default), "tutupan\n")
+}
+
+# --- D. Matriks Luasan Tutupan Lahan BAU -------------------------------------
+area_matrix_bau <- as.matrix(baseline$area_matrix_bau)
+storage.mode(area_matrix_bau) <- "numeric"
+
+# E. Matriks Luasan Tutupan Lahan Skenario 1
+if (!exists("area_matrix_scenario1") || is.null(area_matrix_scenario1)) {
+  if (exists("projection_area_file_scenario1") && file.exists(projection_area_file_scenario1)) {
+    df_s1_raw <- readxl::read_excel(projection_area_file_scenario1)
+    if (is.character(df_s1_raw[[1]]) || is.factor(df_s1_raw[[1]])) {
+      area_matrix_scenario1 <- as.matrix(df_s1_raw[, -1])
+    } else {
+      area_matrix_scenario1 <- as.matrix(df_s1_raw)
+    }
+  } else {
+    area_matrix_scenario1 <- area_matrix_bau
+  }
+}
+area_matrix_scenario1 <- as.matrix(area_matrix_scenario1)
+storage.mode(area_matrix_scenario1) <- "numeric"
+
+# ------------------------------------------------------------------------------
+# 2. EKSTRAK VEKTOR DARI gdp_baseline & FILTER SEKTOR DUMMY (X_0 = 0)
+# ------------------------------------------------------------------------------
+sektor_names <- as.character(unlist(gdp_baseline$SECTOR))
+Y_0          <- as.numeric(unlist(gdp_baseline$FD));          names(Y_0)    <- sektor_names
+x_0          <- as.numeric(unlist(gdp_baseline$OUTPUT));      names(x_0)    <- sektor_names
+v_0          <- as.numeric(unlist(gdp_baseline$GDP));         names(v_0)    <- sektor_names
+Land_0       <- as.numeric(unlist(gdp_baseline$Land_Requirement))
+LPC_0        <- as.numeric(unlist(gdp_baseline$LPC))
+
+Z            <- as.matrix(baseline$intermediate_consumption)
+storage.mode(Z) <- "numeric"
+rownames(Z)  <- colnames(Z) <- sektor_names
+
+# Filter sektor valid (Output > 0)
+idx_valid    <- which(x_0 > 0)
 
 Z            <- Z[idx_valid, idx_valid, drop = FALSE]
 x_0          <- x_0[idx_valid]
 Y_0          <- Y_0[idx_valid]
 v_0          <- v_0[idx_valid]
-v_c          <- v_c[idx_valid]
 Land_0       <- Land_0[idx_valid]
 LPC_0        <- LPC_0[idx_valid]
 sektor_names <- sektor_names[idx_valid]
 n            <- length(idx_valid)
 
-# Remap index sektor terkendala/constrained (co) dan tidak terkendala/unconstrained (no) ke index baru
-co_idx <- which(idx_valid %in% co_idx)
-no_idx <- which(idx_valid %in% no_idx)
+# ------------------------------------------------------------------------------
+# 3. EKSTRAKSI KOEFISIEN INPUT PRIMER (w_c, l_c, sub_c)
+# ------------------------------------------------------------------------------
+v_c <- as.numeric(unlist(gdp_baseline$GDP_PROP))[idx_valid] # Proporsi PDRB
 
+# Proporsi Pendapatan Tenaga Kerja (w_c)
+w_c <- as.numeric(unlist(baseline$income_multiplier$Inc.multiplier))[idx_valid] / x_0
+
+# Proporsi Serapan Tenaga Kerja (l_c: Orang / Juta Rp)
+l_c <- as.numeric(unlist(baseline$labour_multiplier$Lab.multiplier))[idx_valid] / x_0
+
+# Proporsi Surplus Usaha Bruto (sub_c)
+sub_c <- as.numeric(unlist(baseline$SUB_multiplier$SUB.multiplier))[idx_valid] / x_0
+  
+# Remap index sektor terkendala/constrained (co) dan unconstrained (no)
+co_idx <- which(idx_valid %in% which(constrained == 1))
+no_idx <- which(idx_valid %in% which(unconstrained == 1))
 
 # ------------------------------------------------------------------------------
-# 2.3. REKLASIFIKASI SEKTOR TERKENDALA (L=0 ATAU LPC=0 DIPINDAHKAN KE nc)
-# Sektor terkendala lahan (co) mensyaratkan ketersediaan input lahan (L > 0) dan
-# produktivitas positif (LPC > 0). Sektor tanpa lahan dipindahkan ke nc
-# agar sub-matriks M_nc_nc tidak bersifat singular (Hubacek & Sun, 2001).
+# 4. REKLASIFIKASI SEKTOR TERKENDALA (L=0 ATAU LPC=0 DIPINDAHKAN KE nc)
 # ------------------------------------------------------------------------------
 mask_bermasalah <- (Land_0[co_idx] <= 0) | (LPC_0[co_idx] <= 0)
 
@@ -167,226 +279,348 @@ if (any(mask_bermasalah)) {
   co_idx_pindah <- co_idx[mask_bermasalah]
   co_idx        <- co_idx[!mask_bermasalah]
   no_idx        <- sort(c(no_idx, co_idx_pindah))
-  
-  cat("Sektor co dengan L=0 atau LPC=0 dipindahkan ke nc:\n")
-  print(data.frame(
-    idx_asli = co_idx_pindah,
-    sektor   = sektor_names[co_idx_pindah]
-  ))
 }
 
-cat("\n✓ Final: co_idx =", length(co_idx),
-    "| no_idx =", length(no_idx),
-    "| total =", n, "\n")
-
 # ------------------------------------------------------------------------------
-# 2.4. FORMULASI MATRIKS LEONTIEF DAN SUB-PARTISI
-# Evaluasi Teoretis (Hubacek & Sun, 2001 & Miller & Blair, 2009):
-# A = Z * hat(X)^(-1) [Koefisien Teknis Leontief]
-# M = (I - A) dipartisi menjadi M_nc_nc, M_nc_co, M_co_nc, M_co_co.
-# M_nc_nc_inv = (I - A_nc_nc)^(-1) [Matriks Pengali Leontief Sektor Bebas/Non-Lahan]
+# 5. FORMULASI MATRIKS LEONTIEF & INDEKS KETERKAITAN (ITBL & ITFL)
 # ------------------------------------------------------------------------------
-A <- sweep(Z, 2, x_0, "/")
-M <- diag(n) - A
+A_full <- sweep(Z, 2, x_0, "/")
+M_full <- diag(n) - A_full
+B_full <- solve(M_full) # Invers Leontief Penuh (I - A)^(-1)
 
-idx_co <- co_idx
-idx_nc <- no_idx
+col_sum_B   <- colSums(B_full)
+row_sum_B   <- rowSums(B_full)
+total_sum_B <- sum(B_full)
 
-L_0_co <- as.numeric(Land_0[idx_co])
-p_0_co <- as.numeric(LPC_0[idx_co])
+ITBL_vector <- (n * col_sum_B) / total_sum_B
+ITFL_vector <- (n * row_sum_B) / total_sum_B
 
-M_nc_co     <- M[idx_nc, idx_co, drop = FALSE]
-M_nc_nc     <- M[idx_nc, idx_nc, drop = FALSE]
+idx_co      <- co_idx
+idx_nc      <- no_idx
+p_0_co      <- as.numeric(LPC_0[idx_co])
+
+M_nc_co     <- M_full[idx_nc, idx_co, drop = FALSE]
+M_nc_nc     <- M_full[idx_nc, idx_nc, drop = FALSE]
 M_nc_nc_inv <- solve(M_nc_nc)
 
-# Validasi
-stopifnot(!any(is.na(A)))
-stopifnot(!any(is.na(M_nc_co)))
-stopifnot(rcond(M_nc_nc) > 1e-10)
+tahun        <- as.numeric(colnames(area_matrix_bau))
+t_max        <- length(tahun)
+initial_year <- if (exists("params") && !is.null(params$initial_year)) params$initial_year else 2025
 
 # ------------------------------------------------------------------------------
-# 2.5. PARAMETER PROYEKSI TAHUNAN
+# 6. FUNGSI ITERASI PROYEKSI MULTI-INDIKATOR
 # ------------------------------------------------------------------------------
-tahun                 <- as.numeric(colnames(area_matrix_bau))
-t_max                 <- length(tahun)
-laju_teknologi_gamma  <- 0               # Skenario 1: produktivitas konstan
-rate_permintaan_nc    <- growth_rate
-initial_year          <- 2025
-
-
-
-# ------------------------------------------------------------------------------
-# 2.6. ITERASI SIMULASI KOMPARATIF (BAU VS SKENARIO 1)
-# Fungsi ini menghitung PDRB & output sektoral untuk satu skenario lahan,
-# dengan parameter: matriks lahan, matriks proporsi, dan p_0_co (produktivitas).
-# ------------------------------------------------------------------------------
-
-proyeksi_skenario <- function(area_matrix, P_matrix, Y_0, idx_co, idx_nc,
-                              p_0_co, M_nc_co, M_nc_nc_inv, v_c,
-                              rate_permintaan_nc, initial_year, tahun) {
+proyeksi_skenario_multi <- function(area_matrix, P_matrix, Y_0, idx_co, idx_nc,
+                                    p_0_co, M_nc_co, M_nc_nc_inv, v_c, w_c, l_c, sub_c,
+                                    growth_rate, initial_year, tahun) {
   t_max <- length(tahun)
   n     <- length(v_c)
-  
-  x_out           <- matrix(0, nrow = t_max, ncol = n)
-  PDRB_sektoral   <- matrix(0, nrow = t_max, ncol = n)
-  
+  m     <- length(idx_co)
+
+  x_out             <- matrix(0, nrow = t_max, ncol = n)
+  PDRB_sektoral     <- matrix(0, nrow = t_max, ncol = n)
+  Inc_sektoral      <- matrix(0, nrow = t_max, ncol = n)
+  Lab_sektoral      <- matrix(0, nrow = t_max, ncol = n)
+  SUB_sektoral      <- matrix(0, nrow = t_max, ncol = n)
+  L_co_matrix       <- matrix(0, nrow = t_max, ncol = m)
+
+  # P_matrix: [n_sektor × n_tutupan] = [61 × 73]
+  # Ambil baris idx_co → [n_co × n_tutupan]
+  P_sub <- as.matrix(P_matrix[idx_co, , drop = FALSE])   # ← BARIS
+  storage.mode(P_sub) <- "numeric"
+
   for (k in seq_len(t_max)) {
     yr             <- tahun[k]
     selisih_tahun  <- yr - initial_year
-    
-    # A. Permintaan akhir sektor nc (eksogen)
-    Y_nc_t <- Y_0[idx_nc] * ((1 + rate_permintaan_nc[idx_nc]) ^ selisih_tahun)
-    
+
+    # A. Permintaan akhir nc
+    Y_nc_t <- Y_0[idx_nc] * ((1 + growth_rate[idx_nc]) ^ selisih_tahun)
+
     # B. Output sektor co dibatasi lahan
-    luas_tutupan_t <- area_matrix[, k]
-    L_co_t         <- as.vector(P_matrix[idx_co, ] %*% luas_tutupan_t)
+    luas_tutupan_t <- as.numeric(unlist(area_matrix[, k]))   # [n_tutupan] = [73]
+    # P_sub: [n_co × 73] %*% luas: [73] = [n_co]
+    L_co_t         <- as.vector(P_sub %*% luas_tutupan_t)    # [n_co]
     x_co_t         <- matrix(L_co_t * p_0_co, ncol = 1)
-    
-    # C. Mixed IO solve untuk output sektor nc
+
+    # C. Mixed IO
     rhs    <- Y_nc_t - (M_nc_co %*% x_co_t)
     x_nc_t <- M_nc_nc_inv %*% rhs
-    
-    # D. Gabung output total
+
+    # D. Rekonstruksi
     x_t             <- numeric(n)
     x_t[idx_co]     <- as.vector(x_co_t)
     x_t[idx_nc]     <- as.vector(x_nc_t)
-    
-    # E. PDRB sektoral
-    PDRB_t <- v_c * x_t
-    
+
+    # E. Multi-indikator
+    PDRB_sektoral[k, ] <- v_c * x_t
+    Inc_sektoral[k, ]  <- w_c * x_t
+    Lab_sektoral[k, ]  <- l_c * x_t
+    SUB_sektoral[k, ]  <- sub_c * x_t
     x_out[k, ]         <- x_t
-    PDRB_sektoral[k, ] <- PDRB_t
+    L_co_matrix[k, ]   <- L_co_t
   }
-  
+
   list(
     x_t           = x_out,
-    PDRB_sektoral = PDRB_sektoral,
+    L_co_matrix   = L_co_matrix,
     PDRB_total    = rowSums(PDRB_sektoral),
+    Inc_total     = rowSums(Inc_sektoral),
+    Lab_total     = rowSums(Lab_sektoral),
+    SUB_total     = rowSums(SUB_sektoral),
     Output_total  = rowSums(x_out)
   )
 }
 
 # ------------------------------------------------------------------------------
-# 2.7 JALANKAN PROYEKSI: BAU & SKENARIO 1
+# 7. JALANKAN SIMULASI: BAU VS SKENARIO 1
 # ------------------------------------------------------------------------------
-proyeksi_bau <- proyeksi_skenario(
-  area_matrix = area_matrix_bau,
-  P_matrix    = P_default,
-  Y_0 = Y_0, idx_co = idx_co, idx_nc = idx_nc,
-  p_0_co = p_0_co, M_nc_co = M_nc_co, M_nc_nc_inv = M_nc_nc_inv,
-  v_c = v_c, rate_permintaan_nc = rate_permintaan_nc,
-  initial_year = initial_year, tahun = tahun
+proyeksi_bau <- proyeksi_skenario_multi(
+  area_matrix = area_matrix_bau, P_matrix = P_default,
+  Y_0 = Y_0, idx_co = idx_co, idx_nc = idx_nc, p_0_co = p_0_co,
+  M_nc_co = M_nc_co, M_nc_nc_inv = M_nc_nc_inv,
+  v_c = v_c, w_c = w_c, l_c = l_c, sub_c = sub_c,
+  growth_rate = growth_rate, initial_year = initial_year, tahun = tahun
 )
 
-proyeksi_s1 <- proyeksi_skenario(
-  area_matrix = area_matrix_scenario1,
-  P_matrix    = P_default_scenario1,
-  Y_0 = Y_0, idx_co = idx_co, idx_nc = idx_nc,
-  p_0_co = p_0_co, M_nc_co = M_nc_co, M_nc_nc_inv = M_nc_nc_inv,
-  v_c = v_c, rate_permintaan_nc = rate_permintaan_nc,
-  initial_year = initial_year, tahun = tahun
+proyeksi_s1 <- proyeksi_skenario_multi(
+  area_matrix = area_matrix_scenario1, P_matrix = P_default_scenario1,
+  Y_0 = Y_0, idx_co = idx_co, idx_nc = idx_nc, p_0_co = p_0_co,
+  M_nc_co = M_nc_co, M_nc_nc_inv = M_nc_nc_inv,
+  v_c = v_c, w_c = w_c, l_c = l_c, sub_c = sub_c,
+  growth_rate = growth_rate, initial_year = initial_year, tahun = tahun
 )
 
 # ------------------------------------------------------------------------------
-# 2.8 REKAPITULASI HASIL KOMPARATIF
+# 8. REKAPITULASI PROYEKSI MAKROEKONOMI KOMPARATIF
 # ------------------------------------------------------------------------------
-df_proyeksi <- data.frame(
-  Tahun                        = tahun,
-  PDRB_Total_BAU_Juta          = proyeksi_bau$PDRB_total,
-  PDRB_Total_Skenario1_Juta    = proyeksi_s1$PDRB_total,
-  Selisih_PDRB_Juta            = proyeksi_s1$PDRB_total - proyeksi_bau$PDRB_total,
-  Persentase_Dampak_PDRB       = (proyeksi_s1$PDRB_total - proyeksi_bau$PDRB_total) /
-                                  proyeksi_bau$PDRB_total * 100,
-  Output_Total_BAU_Juta        = proyeksi_bau$Output_total,
-  Output_Total_S1_Juta         = proyeksi_s1$Output_total
+df_proyeksi_multi <- data.frame(
+  Tahun                  = tahun,
+
+  PDRB_BAU_Juta          = proyeksi_bau$PDRB_total,
+  PDRB_S1_Juta           = proyeksi_s1$PDRB_total,
+  PDRB_Dampak_Pct        = (proyeksi_s1$PDRB_total - proyeksi_bau$PDRB_total) / proyeksi_bau$PDRB_total * 100,
+
+  Pendapatan_BAU_Juta    = proyeksi_bau$Inc_total,
+  Pendapatan_S1_Juta     = proyeksi_s1$Inc_total,
+  Pendapatan_Dampak_Pct  = (proyeksi_s1$Inc_total - proyeksi_bau$Inc_total) / proyeksi_bau$Inc_total * 100,
+
+  TenagaKerja_BAU_Orang  = proyeksi_bau$Lab_total,
+  TenagaKerja_S1_Orang   = proyeksi_s1$Lab_total,
+  TenagaKerja_Dampak_Pct = (proyeksi_s1$Lab_total - proyeksi_bau$Lab_total) / proyeksi_bau$Lab_total * 100,
+
+  SUB_BAU_Juta           = proyeksi_bau$SUB_total,
+  SUB_S1_Juta            = proyeksi_s1$SUB_total,
+  SUB_Dampak_Pct         = (proyeksi_s1$SUB_total - proyeksi_bau$SUB_total) / proyeksi_bau$SUB_total * 100
 )
 
-# PDRB sektoral per sektor (kolom dinamis)
-for (i in seq_len(n)) {
-  df_proyeksi[[paste0("PDRB_BAU_", i)]] <- proyeksi_bau$PDRB_sektoral[, i]
-  df_proyeksi[[paste0("PDRB_S1_",  i)]] <- proyeksi_s1$PDRB_sektoral[,  i]
+# ------------------------------------------------------------------------------
+# 9. REKAPITULASI ITBL & ITFL SEKTOR LAHAN PER TAHUN
+# ------------------------------------------------------------------------------
+df_keterkaitan_lahan <- data.frame()
+
+for (k in seq_len(t_max)) {
+  yr <- tahun[k]
+  df_temp <- data.frame(
+    Tahun         = yr,
+    Sektor_Lahan  = sektor_names[idx_co],
+    Luas_BAU_ha   = proyeksi_bau$L_co_matrix[k, ],
+    Luas_S1_ha    = proyeksi_s1$L_co_matrix[k, ],
+    Selisih_ha    = proyeksi_s1$L_co_matrix[k, ] - proyeksi_bau$L_co_matrix[k, ],
+    ITBL          = round(ITBL_vector[idx_co], 4),
+    ITFL          = round(ITFL_vector[idx_co], 4)
+  )
+  df_keterkaitan_lahan <- rbind(df_keterkaitan_lahan, df_temp)
+}
+```
+
+```{r visualisasi-komparatif-multi-indikator, echo=FALSE, message=FALSE, warning=FALSE}
+# ==============================================================================
+# 10. VISUALISASI KOMPARATIF MULTI-INDIKATOR: 5 TABEL & 5 GRAFIK (ABSOLUT)
+#     BAU VS SKENARIO 1
+# ==============================================================================
+
+# --- Helper: Grouped Bar Chart Komparasi Total ---
+plot_komparasi_total <- function(df, var_bau, var_s1, title_text, y_label, scale_factor = 1) {
+  df_plot <- df %>%
+    dplyr::select(Tahun, BAU = all_of(var_bau), Skenario_1 = all_of(var_s1)) %>%
+    dplyr::mutate(
+      BAU        = BAU / scale_factor,
+      Skenario_1 = Skenario_1 / scale_factor
+    ) %>%
+    tidyr::pivot_longer(
+      cols = c("BAU", "Skenario_1"),
+      names_to = "Skenario",
+      values_to = "Nilai"
+    ) %>%
+    dplyr::mutate(Skenario = dplyr::recode(Skenario, "Skenario_1" = "Skenario 1"))
+
+  ggplot(df_plot, aes(x = factor(Tahun), y = Nilai, fill = Skenario)) +
+    geom_bar(stat = "identity", position = position_dodge(width = 0.7), width = 0.6) +
+    scale_fill_manual(values = c("BAU" = "#7f7f7f", "Skenario 1" = "#1f77b4")) +
+    labs(
+      title    = title_text,
+      subtitle = "Perbandingan Nilai Total Absolut: BAU vs Skenario 1",
+      x        = "Tahun Proyeksi",
+      y        = y_label,
+      fill     = "Skenario"
+    ) +
+    theme_minimal() +
+    theme(
+      legend.position = "top",
+      plot.title      = element_text(face = "bold", size = 13),
+      axis.text.x     = element_text(angle = 45, hjust = 1)
+    )
 }
 
-# ------------------------------------------------------------------------------
-# 2.9 VALIDASI REKONSILIASI TAHUN BASIS
-# ------------------------------------------------------------------------------
-cat("\n--- VALIDASI REKONSILIASI TAHUN BASIS ---\n")
-cat("PDRB BAU t=0  :", round(df_proyeksi$PDRB_Total_BAU_Juta[1], 2), "Juta Rp\n")
-cat("PDRB baseline :", round(sum(v_0), 2), "Juta Rp\n")
-cat("Rasio         :", round(df_proyeksi$PDRB_Total_BAU_Juta[1] / sum(v_0), 6), "\n")
+# --- Helper: Tabel Komparasi DT ---
+tabel_komparasi_dt <- function(df, col_bau, col_s1, caption_text, unit_label, scale_factor = 1, digits = 2) {
+  df_dt <- df %>%
+    dplyr::transmute(
+      Tahun                = Tahun,
+      `BAU`                = round(.data[[col_bau]] / scale_factor, digits),
+      `Skenario 1`         = round(.data[[col_s1]] / scale_factor, digits),
+      `Selisih (S1 - BAU)` = round((.data[[col_s1]] - .data[[col_bau]]) / scale_factor, digits)
+    )
 
-stopifnot(!any(is.na(df_proyeksi)))
+  DT::datatable(
+    df_dt,
+    caption = paste0(caption_text, " (", unit_label, ")"),
+    rownames = FALSE,
+    options = list(pageLength = 5, dom = 'tip')
+  ) %>%
+    DT::formatCurrency(c("BAU", "Skenario 1", "Selisih (S1 - BAU)"),
+                       currency = "", interval = 3, mark = ",", digits = digits)
+}
 
+# ==============================================================================
+# INDIKATOR 1: PDRB / GDP TOTAL  (TIDAK BERUBAH)
+# ==============================================================================
+cat("\n### 1. Proyeksi PDRB Total (Triliun Rupiah)\n")
 
-# ------------------------------------------------------------------------------
-# 3. MENAMPILKAN RINGKASAN HASIL TABEL PDRB
-# ------------------------------------------------------------------------------
-cat(" RINGKASAN PROYEKSI PDRB: BAU VS SKENARIO 1 \n")
-
-df_ringkasan <- df_proyeksi[, c(
-  "Tahun",
-  "PDRB_Total_BAU_Juta",
-  "PDRB_Total_Skenario1_Juta",
-  "Selisih_PDRB_Juta",
-  "Persentase_Dampak_PDRB"
-)]
-print(df_ringkasan)
-
-df_ringkasan |>
-  dplyr::mutate(
-    PDRB_BAU_Triliun   = round(PDRB_Total_BAU_Juta / 1e6, 2),
-    PDRB_S1_Triliun    = round(PDRB_Total_Skenario1_Juta / 1e6, 2),
-    Selisih_Triliun    = round(Selisih_PDRB_Juta / 1e6, 2),
-    Dampak_Persen      = round(Persentase_Dampak_PDRB, 2)
-  ) |>
-  dplyr::select(
-    Tahun,
-    PDRB_BAU_Triliun,
-    PDRB_S1_Triliun,
-    Selisih_Triliun,
-    Dampak_Persen
-  ) |>
-  print()
-
-
-# ------------------------------------------------------------------------------
-# 4. VISUALISASI KOMPARATIF (GRAFIK PERBANDINGAN PDRB)
-# ------------------------------------------------------------------------------
-# --- 4.1 Bar chart: PDRB BAU vs Skenario 1 per tahun ---
-df_plot <- data.frame(
-  Tahun        = rep(df_proyeksi$Tahun, 2),
-  PDRB_Triliun = c(df_proyeksi$PDRB_Total_BAU_Juta,
-                   df_proyeksi$PDRB_Total_Skenario1_Juta) / 1e6,
-  Skenario     = factor(rep(c("BAU", "Skenario 1"), each = nrow(df_proyeksi)),
-                        levels = c("BAU", "Skenario 1"))
+tabel_komparasi_dt(
+  df = df_proyeksi_multi,
+  col_bau = "PDRB_BAU_Juta",
+  col_s1  = "PDRB_S1_Juta",
+  caption_text = "Tabel 1: Proyeksi Total PDRB / GDP",
+  unit_label   = "Triliun Rp",
+  scale_factor = 1e6,
+  digits       = 2
 )
 
-p_komparasi <- ggplot(df_plot, aes(x = factor(Tahun), y = PDRB_Triliun, fill = Skenario)) +
-  geom_bar(stat = "identity", position = "dodge", width = 0.6) +
-  scale_fill_manual(values = c("BAU" = "#7f7f7f", "Skenario 1" = "#1f77b4")) +
-  labs(
-    title = "Perbandingan Proyeksi PDRB Total: BAU vs Skenario 1",
-    x     = "Tahun Proyeksi",
-    y     = "Total PDRB (Triliun Rupiah)",
-    fill  = "Skenario Lahan"
-  ) +
-  theme_minimal() +
-  theme(legend.position = "top")
+p1_pdrb <- plot_komparasi_total(
+  df = df_proyeksi_multi,
+  var_bau = "PDRB_BAU_Juta",
+  var_s1  = "PDRB_S1_Juta",
+  title_text = "1. Proyeksi PDRB Total (Triliun Rupiah)",
+  y_label    = "Total PDRB (Triliun Rp)",
+  scale_factor = 1e6
+)
+print(p1_pdrb)
 
-print(p_komparasi)
+# ==============================================================================
+# INDIKATOR 2: PENDAPATAN TENAGA KERJA TOTAL  →  JUta Rupiah
+# ==============================================================================
+cat("\n### 2. Proyeksi Total Pendapatan Tenaga Kerja (Juta Rupiah)\n")
 
-# --- 4.2 Line chart: Dampak (%) Skenario 1 terhadap BAU ---
-p_dampak <- ggplot(df_proyeksi, aes(x = Tahun, y = Persentase_Dampak_PDRB)) +
-  geom_line(color = "#d62728", linewidth = 1.2) +
-  geom_point(color = "#d62728", size = 3) +
-  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
-  labs(
-    title    = "Dampak Skenario 1 terhadap PDRB Total (relatif BAU)",
-    subtitle = "Persentase selisih PDRB Skenario 1 - BAU",
-    x        = "Tahun Proyeksi",
-    y        = "Dampak PDRB (%)"
-  ) +
-  theme_minimal()
+tabel_komparasi_dt(
+  df = df_proyeksi_multi,
+  col_bau = "Pendapatan_BAU_Juta",
+  col_s1  = "Pendapatan_S1_Juta",
+  caption_text = "Tabel 2: Proyeksi Total Pendapatan Tenaga Kerja",
+  unit_label   = "Juta Rp",
+  scale_factor = 1,     # ← dari 1e3
+  digits       = 2
+)
 
-print(p_dampak)
+p2_income <- plot_komparasi_total(
+  df = df_proyeksi_multi,
+  var_bau = "Pendapatan_BAU_Juta",
+  var_s1  = "Pendapatan_S1_Juta",
+  title_text = "2. Proyeksi Total Pendapatan Tenaga Kerja (Juta Rupiah)",
+  y_label    = "Total Pendapatan (Juta Rp)",
+  scale_factor = 1      # ← dari 1e3
+)
+print(p2_income)
+
+# ==============================================================================
+# INDIKATOR 3: SERAPAN TENAGA KERJA TOTAL  (Orang)
+# ==============================================================================
+cat("\n### 3. Proyeksi Total Serapan Tenaga Kerja (Orang)\n")
+
+tabel_komparasi_dt(
+  df = df_proyeksi_multi,
+  col_bau = "TenagaKerja_BAU_Orang",
+  col_s1  = "TenagaKerja_S1_Orang",
+  caption_text = "Tabel 3: Proyeksi Total Serapan Tenaga Kerja",
+  unit_label   = "Orang",
+  scale_factor = 1,
+  digits       = 0
+)
+
+p3_labour <- plot_komparasi_total(
+  df = df_proyeksi_multi,
+  var_bau = "TenagaKerja_BAU_Orang",
+  var_s1  = "TenagaKerja_S1_Orang",
+  title_text = "3. Proyeksi Total Serapan Tenaga Kerja (Orang)",
+  y_label    = "Total Tenaga Kerja (Orang)",
+  scale_factor = 1
+)
+print(p3_labour)
+
+# ==============================================================================
+# INDIKATOR 4: SURPLUS USAHA BRUTO (SUB) TOTAL  →  Juta Rupiah
+# ==============================================================================
+cat("\n### 4. Proyeksi Total Surplus Usaha Bruto / SUB (Juta Rupiah)\n")
+
+tabel_komparasi_dt(
+  df = df_proyeksi_multi,
+  col_bau = "SUB_BAU_Juta",
+  col_s1  = "SUB_S1_Juta",
+  caption_text = "Tabel 4: Proyeksi Total Surplus Usaha Bruto (SUB)",
+  unit_label   = "Juta Rp",
+  scale_factor = 1,     # ← dari 1e3
+  digits       = 2
+)
+
+p4_sub <- plot_komparasi_total(
+  df = df_proyeksi_multi,
+  var_bau = "SUB_BAU_Juta",
+  var_s1  = "SUB_S1_Juta",
+  title_text = "4. Proyeksi Total Surplus Usaha Bruto / SUB (Juta Rupiah)",
+  y_label    = "Total SUB (Juta Rp)",
+  scale_factor = 1      # ← dari 1e3
+)
+print(p4_sub)
+
+# ==============================================================================
+# INDIKATOR 5: TOTAL LUAS LAHAN SEKTOR TERKENDALA & KETERKAITAN (ITBL/ITFL)
+# ==============================================================================
+cat("\n### 5. Proyeksi Total Luas Lahan Sektor Terkendala & Indeks Keterkaitan (ITBL/ITFL)\n")
+
+df_lahan_total <- df_keterkaitan_lahan %>%
+  dplyr::group_by(Tahun) %>%
+  dplyr::summarise(
+    Total_Luas_BAU_ha = sum(Luas_BAU_ha, na.rm = TRUE),
+    Total_Luas_S1_ha  = sum(Luas_S1_ha, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+DT::datatable(
+  df_keterkaitan_lahan,
+  caption = "Tabel 5: Detail Luas Lahan Sektoral (Hektar) dan Indeks Keterkaitan (ITBL & ITFL)",
+  rownames = FALSE,
+  filter = "top",
+  options = list(pageLength = 6)
+) %>%
+  DT::formatRound(c("Luas_BAU_ha", "Luas_S1_ha", "Selisih_ha", "ITBL", "ITFL"), digits = 2)
+
+p5_lahan <- plot_komparasi_total(
+  df = df_lahan_total,
+  var_bau = "Total_Luas_BAU_ha",
+  var_s1  = "Total_Luas_S1_ha",
+  title_text = "5. Proyeksi Total Luas Lahan Sektor Terkendala (Hektar)",
+  y_label    = "Total Luas Lahan (Hektar)",
+  scale_factor = 1
+)
+print(p5_lahan)
 ```
