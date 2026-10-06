@@ -5,7 +5,7 @@ date: "`r Sys.Date()`"
 time: "`r format(Sys.time(), '%H:%M:%S')`"
 output: html_document
 params:
-  mode: "Scenario"         # "BAU" atau "Scenario"
+  mode: "BAU"         # "BAU" atau "Scenario"
   n_scenarios: 1     # Jumlah skenario intervensi
   scenario_name: "Proyeksi Luasan Lahan"   # nama skenario intervensi
   initial_year: 2025
@@ -55,11 +55,11 @@ Mode Scenario: Proyeksi BAU + Skenario `r params$scenario_name`
 # INPUT & PREPROCESSING
 # =====================================================
 
-descriptive_analysis_file <- "inst/extdata/output/descriptive_analysis_module_padagimo.rds"
-# projection_area_file_bau <- "inst/extdata/example_data/Bukecap/luc_projection_bukecap_bau.xlsx"
+descriptive_analysis_file <- "inst/extdata/output/descriptive_analysis_module.rds"
+projection_area_file_bau <- "inst/extdata/example_data/Bukecap/luc_projection_bukecap_bau.xlsx"
 # =====================================================
 # Input: PADAGIMO (uncomment line di bawah ini jika yang dijalankan PADGIMO)
-projection_area_file_bau <- "inst/extdata/example_data/Padagimo/luc_projection_padagimo_bau.xlsx"
+# projection_area_file_bau <- "inst/extdata/example_data/Padagimo/luc_projection_padagimo_bau.xlsx"
 # =====================================================
 initial_year <- params$initial_year
 
@@ -129,28 +129,28 @@ all_projections <- list(BAU = projection_bau)
 if (params$mode == "Scenario") {
   message("Menjalankan proyeksi skenario intervensi...")
 
-  # scenario_inputs <- list(
-  #   name = paste0("Skenario_", params$scenario_name),
-  #   luc_projection    = "inst/extdata/scenario/scenario1/luc_projection.xlsx",
-  #   land_distribution = "inst/extdata/scenario/scenario1/distribusi_lahan.xlsx",
-  #   growth_rate       = "inst/extdata/scenario/scenario1/growth_rate.xlsx",
-  #   lpc               = "inst/extdata/scenario/scenario1/produktivitas_lpc.xlsx",
-  #   io_changes        = "inst/extdata/scenario/scenario1/perubahan_io.xlsx",
-  #   intensity         = "inst/extdata/scenario/scenario1/intensitas.xlsx"
-  # )
+  scenario_inputs <- list(
+    name = paste0("Skenario_", params$scenario_name),
+    luc_projection    = "inst/extdata/scenario/scenario1/luc_projection_bukecap.xlsx",
+    land_distribution = "inst/extdata/scenario/scenario1/luc_projection_bukecap.xlsx",
+    growth_rate       = "inst/extdata/scenario/scenario1/growth_rate.xlsx",
+    lpc               = "inst/extdata/scenario/scenario1/produktivitas_lpc.xlsx",
+    io_changes        = "inst/extdata/scenario/scenario1/perubahan_io.xlsx",
+    intensity         = "inst/extdata/scenario/scenario1/intensitas.xlsx"
+  )
   
   # =====================================================
   # Input: PADAGIMO (uncomment line di bawah ini jika yang dijalankan PADGIMO)
   # =====================================================
-  scenario_inputs <- list(
-    name = paste0("Skenario_", params$scenario_name),
-    luc_projection    = "inst/extdata/scenario/Padagimo/scenario1/luc_projection.xlsx",
-    land_distribution = "inst/extdata/scenario/Padagimo/scenario1/distribusi_lahan.xlsx",
-    growth_rate       = "inst/extdata/scenario/Padagimo/scenario1/growth_rate.xlsx",
-    lpc               = "inst/extdata/scenario/Padagimo/scenario1/produktivitas_lpc.xlsx",
-    io_changes        = "inst/extdata/scenario/Padagimo/scenario1/perubahan_io.xlsx",
-    intensity         = "inst/extdata/scenario/Padagimo/scenario1/intensitas.xlsx"
-  )
+  # scenario_inputs <- list(
+  #   name = paste0("Skenario_", params$scenario_name),
+  #   luc_projection    = "inst/extdata/scenario/Padagimo/scenario1/luc_projection.xlsx",
+  #   land_distribution = "inst/extdata/scenario/Padagimo/scenario1/distribusi_lahan.xlsx",
+  #   growth_rate       = "inst/extdata/scenario/Padagimo/scenario1/growth_rate.xlsx",
+  #   lpc               = "inst/extdata/scenario/Padagimo/scenario1/produktivitas_lpc.xlsx",
+  #   io_changes        = "inst/extdata/scenario/Padagimo/scenario1/perubahan_io.xlsx",
+  #   intensity         = "inst/extdata/scenario/Padagimo/scenario1/intensitas.xlsx"
+  # )
 
 
   sc_input <- load_scenario_inputs(scenario_inputs, P_default, growth_rate)
