@@ -235,77 +235,137 @@ load_projection_baseline <- function(path, projection_area_file_bau) {
 
 #' Load scenario inputs with fallback to baseline
 #'
-#' Reads and processes all optional scenario input files. If a file is not
-#' provided or does not exist, the corresponding baseline value is used.
-#'
-#' @param sc_input A named list containing paths to scenario input files:
+#' @param sc_input Named list berisi path file skenario:
 #'   `luc_projection`, `land_distribution`, `growth_rate`, `lpc`,
 #'   `io_changes`, `intensity`.
-#' @param P_default Baseline land proportion matrix.
-#' @param growth_rate Baseline growth rate data.
+#' @param P_default Matriks proporsi lahan baseline.
+#' @param growth_rate Data growth rate baseline.
 #'
-#' @return A list with processed scenario inputs:
-#'   \item{luc_projection}{Path to scenario land projection file}
-#'   \item{P}{Scenario land proportion matrix}
-#'   \item{growth_rate}{Scenario growth rate data}
-#'   \item{lpc_scenario}{Tibble or `NULL`}
-#'   \item{io_changes}{Tibble or `NULL`}
-#'   \item{intensity_table}{Tibble or `NULL`}
-#'
-#' @examples
-#' \dontrun{
-#' sc_input <- load_scenario_inputs(
-#'   sc_input = scenario_files,
-#'   P_default = P_default,
-#'   growth_rate = growth_rate
-#' )
-#' }
+#' @return List berisi:
+#'   \item{luc_projection}{Path ke file proyeksi lahan}
+#'   \item{area_matrix_scenario}{Matriks tutupan lahan skenario (opsional)}
+#'   \item{P}{Matriks proporsi lahan skenario}
+#'   \item{growth_rate}{Growth rate skenario}
+#'   \item{lpc_scenario}{Tibble LPC skenario atau NULL}
+#'   \item{io_changes}{Tibble perubahan IO atau NULL}
+#'   \item{intensity_table}{Tibble intensitas atau NULL}
 #'
 #' @export
 load_scenario_inputs <- function(sc_input, P_default, growth_rate) {
   
-  # Land distribution
+  # --- A. Land Distribution (sheet "land_proportion") ------------------------
+  # Default: gunakan P_default baseline
   P_sc <- P_default
-  if (!is.null(sc_input$land_distribution) && file.exists(sc_input$land_distribution)) {
-    land_prop_sc <- read_input_file(sc_input$land_distribution, header = TRUE)
+  
+  if (!is.null(sc_input$land_distribution) &&
+      file.exists(sc_input$land_distribution)) {
     
-    # Kolom LC adalah semua kolom selain ID dan Sektor
-    lc_cols <- setdiff(colnames(land_prop_sc), c("ID", "Sektor"))
+    # Cek apakah sheet "land_proportion" ada di file
+    sheet_names <- readxl::excel_sheets(sc_input$land_distribution)
     
-    if (length(lc_cols) == 0) {
-      stop("Tidak ditemukan kolom tutupan lahan pada file distribusi lahan.")
+    if ("land_proportion" %in% sheet_names) {
+      # ✓ Sheet ada → baca dan proses
+      cat("✓ Sheet 'land_proportion' ditemukan → gunakan proporsi skenario\n")
+      
+      land_prop_sc <- read_input_file(
+        sc_input$land_distribution,
+        header = TRUE,
+        sheet  = "land_proportion"
+      )
+      
+      # Kolom LC = semua kolom selain ID dan Sektor
+      lc_cols <- setdiff(colnames(land_prop_sc), c("ID", "Sektor"))
+      
+      if (length(lc_cols) == 0) {
+        stop("Tidak ditemukan kolom tutupan lahan pada sheet 'land_proportion'.")
+      }
+      
+      # Keluarkan kolom ID & Sektor → matriks numerik
+      P_sc <- as.matrix(land_prop_sc[, lc_cols])
+      storage.mode(P_sc) <- "numeric"
+      
+      # Set nama baris = Sektor, kolom = nama tutupan lahan
+      if ("Sektor" %in% colnames(land_prop_sc)) {
+        rownames(P_sc) <- as.character(land_prop_sc$Sektor)
+      }
+      
+      # Validasi dimensi
+      if (ncol(P_sc) != ncol(P_default)) {
+        stop("Jumlah kolom tutupan lahan pada skenario (", ncol(P_sc),
+             ") tidak sesuai dengan baseline (", ncol(P_default), ").")
+      }
+      if (nrow(P_sc) != nrow(P_default)) {
+        stop("Jumlah baris sektor pada skenario (", nrow(P_sc),
+             ") tidak sesuai dengan baseline (", nrow(P_default), ").")
+      }
+      
+      # Samakan nama dengan P_default
+      rownames(P_sc) <- rownames(P_default)
+      colnames(P_sc) <- colnames(P_default)
+      
+    } else {
+      # ✗ Sheet tidak ada → pakai P_default
+      cat("ℹ Sheet 'land_proportion' tidak ditemukan → gunakan P_default baseline\n")
+      P_sc <- P_default
     }
     
-    P_sc <- as.matrix(land_prop_sc[, lc_cols])
-    storage.mode(P_sc) <- "numeric"
-    
-    if (ncol(P_sc) != ncol(P_default)) {
-      stop("Jumlah kolom tutupan lahan pada skenario tidak sesuai dengan baseline.")
-    }
+  } else {
+    cat("ℹ File land_distribution tidak tersedia → gunakan P_default baseline\n")
+    P_sc <- P_default
   }
   
-  # Growth rate
+  # --- B. LUC Projection (sheet "luc_projection") ----------------------------
+  area_matrix_sc <- NULL
+  if (!is.null(sc_input$luc_projection) &&
+      file.exists(sc_input$luc_projection)) {
+    
+    sheet_names  <- readxl::excel_sheets(sc_input$luc_projection)
+    sheet_target <- if ("luc_projection" %in% sheet_names) {
+      "luc_projection"
+    } else {
+      1  # fallback: sheet pertama
+    }
+    
+    df_luc <- read_input_file(
+      sc_input$luc_projection,
+      header = TRUE,
+      sheet  = sheet_target
+    )
+    
+    # Asumsi: kolom pertama = ID, kolom kedua = LC, sisanya tahun
+    projection_long <- df_luc |>
+      tidyr::pivot_longer(
+        cols      = -c(ID, LC),
+        names_to  = "YEAR",
+        values_to = "AREA"
+      ) |>
+      dplyr::mutate(YEAR = as.numeric(YEAR))
+    
+    area_matrix_sc <- create_area_matrix(projection_long)
+  }
+  
+  # --- C. Growth Rate --------------------------------------------------------
   growth_rate_sc <- growth_rate
   if (!is.null(sc_input$growth_rate) && file.exists(sc_input$growth_rate)) {
     growth_rate_sc <- read_input_file(sc_input$growth_rate, header = TRUE)
   }
   
-  # LPC productivity
+  # --- D. LPC Productivity ---------------------------------------------------
   lpc_sc <- NULL
   if (!is.null(sc_input$lpc) && file.exists(sc_input$lpc)) {
     lpc_sc <- read_input_file(sc_input$lpc, header = TRUE)
-    lpc_sc$Increment_Rate <- as.numeric(lpc_sc$Increment_Rate)
+    lpc_sc$Increment_Rate   <- as.numeric(lpc_sc$Increment_Rate)
     lpc_sc$Area_Implemented <- as.numeric(lpc_sc$Area_Implemented)
   }
   
-  # IO changes
+  # --- E. IO Changes ---------------------------------------------------------
   io_sc <- NULL
   if (!is.null(sc_input$io_changes) && file.exists(sc_input$io_changes)) {
     io_sc <- read_input_file(sc_input$io_changes, header = TRUE)
     io_sc$Change_Pct <- as.numeric(io_sc$Change_Pct) / 100
   }
   
-  # Intensity
+  # --- F. Intensity ----------------------------------------------------------
   int_sc <- NULL
   if (!is.null(sc_input$intensity) && file.exists(sc_input$intensity)) {
     int_sc <- read_input_file(sc_input$intensity, header = TRUE)
@@ -313,11 +373,12 @@ load_scenario_inputs <- function(sc_input, P_default, growth_rate) {
   }
   
   list(
-    luc_projection  = sc_input$luc_projection,
-    P               = P_sc,
-    growth_rate     = growth_rate_sc,
-    lpc_scenario    = lpc_sc,
-    io_changes      = io_sc,
-    intensity_table = int_sc
+    luc_projection       = sc_input$luc_projection,
+    area_matrix_scenario = area_matrix_sc,
+    P                    = P_sc,
+    growth_rate          = growth_rate_sc,
+    lpc_scenario         = lpc_sc,
+    io_changes           = io_sc,
+    intensity_table      = int_sc
   )
 }
