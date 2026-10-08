@@ -245,13 +245,11 @@ load_projection_baseline <- function(path, projection_area_file_bau) {
 #'   \item{luc_projection}{Path ke file proyeksi lahan}
 #'   \item{area_matrix_scenario}{Matriks tutupan lahan skenario (opsional)}
 #'   \item{P}{Matriks proporsi lahan skenario}
-#'   \item{growth_rate}{Growth rate skenario}
 #'   \item{lpc_scenario}{Tibble LPC skenario atau NULL}
 #'   \item{io_changes}{Tibble perubahan IO atau NULL}
-#'   \item{intensity_table}{Tibble intensitas atau NULL}
 #'
 #' @export
-load_scenario_inputs <- function(sc_input, P_default, growth_rate) {
+load_scenario_inputs <- function(sc_input, P_default) {
   
   # --- A. Land Distribution (sheet "land_proportion") ------------------------
   # Default: gunakan P_default baseline
@@ -344,41 +342,73 @@ load_scenario_inputs <- function(sc_input, P_default, growth_rate) {
     area_matrix_sc <- create_area_matrix(projection_long)
   }
   
-  # --- C. Growth Rate --------------------------------------------------------
-  growth_rate_sc <- growth_rate
-  if (!is.null(sc_input$growth_rate) && file.exists(sc_input$growth_rate)) {
-    growth_rate_sc <- read_input_file(sc_input$growth_rate, header = TRUE)
-  }
-  
-  # --- D. LPC Productivity ---------------------------------------------------
+  # --- C. LPC Productivity ---------------------------------------------------
   lpc_sc <- NULL
+  
   if (!is.null(sc_input$lpc) && file.exists(sc_input$lpc)) {
-    lpc_sc <- read_input_file(sc_input$lpc, header = TRUE)
-    lpc_sc$Increment_Rate   <- as.numeric(lpc_sc$Increment_Rate)
-    lpc_sc$Area_Implemented <- as.numeric(lpc_sc$Area_Implemented)
+    # 1. Panggil read_input_file dengan parameter sheet dan skip
+    # Catatan: skip = 11 melompati 11 baris judul/info sehingga Baris 12 menjadi Header Kolom.
+    lpc_sc <- read_input_file(
+      path = sc_input$lpc,
+      sheet = "Skenario_LPC",
+      skip = 11, # Sesuaikan dengan template
+      header = TRUE
+    )
+    
+    # 2. Ekstraksi & Konversi Kolom secara Fleksibel (Mendukung Template Baru & Lama)
+    if ("LPC SKENARIO 2 (Rp Juta/Ha)" %in% colnames(lpc_sc)) {
+      # Format Template produktivitas_lpc.xlsx Baru
+      lpc_sc$LPC_S2 <- as.numeric(lpc_sc$`LPC SKENARIO 2 (Rp Juta/Ha)`)
+      
+      if ("TARGET GROWTH FACTOR (%)" %in% colnames(lpc_sc)) {
+        lpc_sc$Growth_Factor <- as.numeric(lpc_sc$`TARGET GROWTH FACTOR (%)`)
+      }
+    } else if ("Increment_Rate" %in% colnames(lpc_sc)) {
+      # Format Skrip Lama
+      lpc_sc$Increment_Rate <- as.numeric(lpc_sc$Increment_Rate)
+      
+      if ("Area_Implemented" %in% colnames(lpc_sc)) {
+        lpc_sc$Area_Implemented <- as.numeric(lpc_sc$Area_Implemented)
+      }
+    }
   }
   
-  # --- E. IO Changes ---------------------------------------------------------
+  # --- D. IO Changes / Restrukturisasi (sheet "Restrukturisasi") ------------
   io_sc <- NULL
   if (!is.null(sc_input$io_changes) && file.exists(sc_input$io_changes)) {
-    io_sc <- read_input_file(sc_input$io_changes, header = TRUE)
-    io_sc$Change_Pct <- as.numeric(io_sc$Change_Pct) / 100
+    sheet_names <- readxl::excel_sheets(sc_input$io_changes)
+    
+    # Deteksi nama sheet Restrukturisasi (fleksibel "Restrukturisasi" atau "Skenario_4_Restrukturisasi")
+    if ("Restrukturisasi" %in% sheet_names) {
+      sheet_target <- "Restrukturisasi"
+      skip_rows <- 11
+    } else if ("Skenario_4_Restrukturisasi" %in% sheet_names) {
+      sheet_target <- "Skenario_4_Restrukturisasi"
+      skip_rows <- 11
+    } else {
+      sheet_target <- 1
+      skip_rows <- 0
+    }
+    
+    io_sc <- read_input_file(
+      path   = sc_input$io_changes,
+      sheet  = sheet_target,
+      skip   = skip_rows,
+      header = TRUE
+    )
+    
+    # Penanganan format kolom lama (jika ada Change_Pct)
+    if ("Change_Pct" %in% colnames(io_sc)) {
+      io_sc$Change_Pct <- as.numeric(io_sc$Change_Pct) / 100
+    }
   }
   
-  # --- F. Intensity ----------------------------------------------------------
-  int_sc <- NULL
-  if (!is.null(sc_input$intensity) && file.exists(sc_input$intensity)) {
-    int_sc <- read_input_file(sc_input$intensity, header = TRUE)
-    int_sc$Intensity <- as.numeric(int_sc$Intensity) / 100
-  }
   
   list(
     luc_projection       = sc_input$luc_projection,
     area_matrix_scenario = area_matrix_sc,
     P                    = P_sc,
-    growth_rate          = growth_rate_sc,
     lpc_scenario         = lpc_sc,
-    io_changes           = io_sc,
-    intensity_table      = int_sc
+    io_changes           = io_sc
   )
 }
