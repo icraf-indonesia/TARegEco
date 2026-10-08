@@ -1,5 +1,5 @@
 ---
-title: "TA Regional Economy Module - Projection Notebook"
+title: "TA Regional Economy Module - Projection Notebook - Asumsi 1 Perubahan Lahan"
 author: "LUMENS Developer Team"
 date: "`r Sys.Date()`"
 time: "`r format(Sys.time(), '%H:%M:%S')`"
@@ -155,7 +155,6 @@ projection_bau <- run_projection(
   growth_rate         = growth_rate,
   lpc_scenario        = NULL,
   io_changes          = NULL,
-  intensity_table     = NULL,
   constrained         = constrained,
   unconstrained       = unconstrained
 )
@@ -175,15 +174,13 @@ if (ada_skenario) {
 
   scenario_inputs <- list(
     name              = paste0("Skenario_", params$scenario_name),
-    luc_projection    = "inst/extdata/scenario/scenario1/luc_projection_bukecap.xlsx",
-    land_distribution = "inst/extdata/scenario/scenario1/luc_projection_bukecap.xlsx",
-    growth_rate       = "inst/extdata/scenario/scenario1/growth_rate.xlsx",
+    luc_projection    = "inst/extdata/scenario/scenario1/luc_projection.xlsx",
+    land_distribution = "inst/extdata/scenario/scenario1/luc_projection.xlsx",
     lpc               = "inst/extdata/scenario/scenario1/produktivitas_lpc.xlsx",
-    io_changes        = "inst/extdata/scenario/scenario1/perubahan_io.xlsx",
-    intensity         = "inst/extdata/scenario/scenario1/intensitas.xlsx"
+    io_changes        = "inst/extdata/scenario/scenario1/perubahan_io.xlsx"
   )
 
-  sc_input <- load_scenario_inputs(scenario_inputs, P_default, growth_rate)
+  sc_input <- load_scenario_inputs(scenario_inputs, P_default)
 
   # Area matrix untuk skenario
   area_matrix_sc <- sc_input$area_matrix_scenario
@@ -209,10 +206,9 @@ if (ada_skenario) {
     sector_idx          = sector_idx,
     P                   = sc_input$P,
     area_matrix         = area_matrix_sc,
-    growth_rate         = sc_input$growth_rate,
+    growth_rate         = growth_rate,
     lpc_scenario        = sc_input$lpc_scenario,
     io_changes          = sc_input$io_changes,
-    intensity_table     = sc_input$intensity_table,
     constrained         = constrained,
     unconstrained       = unconstrained
   )
@@ -235,10 +231,8 @@ if (ada_skenario) {
     output_multiplier = output_multiplier,
     linkage_table     = linkage_table,
     P                 = sc_input$P,
-    growth_rate       = sc_input$growth_rate,
     lpc_scenario      = sc_input$lpc_scenario,
-    io_changes        = sc_input$io_changes,
-    intensity_table   = sc_input$intensity_table
+    io_changes        = sc_input$io_changes
   )
 
   save_projection_results(
