@@ -1,0 +1,471 @@
+---
+title: "TA Regional Economy Module - Projection Notebook - Asumsi 3 Hilirisasi"
+author: "LUMENS Developer Team"
+date: "`r Sys.Date()`"
+time: "`r format(Sys.time(), '%H:%M:%S')`"
+output: html_document
+params:
+  mode: "Komparasi"         # "BAU" atau "Scenario" atau "Komparasi"
+  scenario_name: "Pengalihan Sektor Padi ke Jasa"   # nama skenario intervensi
+  initial_year: 2025
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+if (requireNamespace("TARegEco", quietly = TRUE)) {
+  library(TARegEco)
+} else {
+  devtools::load_all(".")
+}
+
+library(DT)
+library(htmlwidgets)
+library(ggplot2)
+library(plotly)
+library(dplyr)
+library(tidyr)
+library(readxl)
+library(tibble)
+
+# Load all functions from R/
+source_files <- list.files("R", pattern = "\\.R$", full.names = TRUE)
+invisible(lapply(source_files, source))
+```
+
+```{r, read-input, echo=FALSE, message=FALSE, warning=FALSE}
+# ------------------------------------------------------------------------------
+# PERSIAPAN & SANITASI DATA BASELINE
+# ------------------------------------------------------------------------------
+descriptive_analysis_file <- "inst/extdata/output/descriptive_analysis_module.rds"
+projection_area_file_bau <- "inst/extdata/scenario/scenarioBAU/luc_projection.xlsx"
+
+initial_year <- params$initial_year
+
+baseline <- load_projection_baseline(
+  path = descriptive_analysis_file,
+  projection_area_file_bau = projection_area_file_bau
+)
+
+# Akses komponen baseline
+gdp_baseline      <- baseline$gdp_baseline
+leontief_matrix   <- baseline$leontief_matrix
+full_io_table     <- baseline$full_io_table
+code_registry     <- baseline$code_registry
+sector_idx        <- baseline$sector_idx
+intermediate_consumption.m <- baseline$intermediate_consumption
+income_multiplier <- baseline$income_multiplier
+labour_multiplier <- baseline$labour_multiplier
+SUB_multiplier    <- baseline$SUB_multiplier
+output_multiplier <- baseline$output_multiplier
+linkage_table     <- baseline$linkage_table
+P_default         <- baseline$P_default
+growth_rate       <- baseline$growth_rate
+area_matrix_bau   <- baseline$area_matrix_bau
+constrained       <- baseline$constrained
+unconstrained     <- baseline$unconstrained
+
+scenario_inputs <- list(
+    name              = paste0("Skenario_", params$scenario_name),
+    luc_projection    = "inst/extdata/scenario/scenario3/luc_projection.xlsx",
+    land_distribution = "inst/extdata/scenario/scenario3/luc_projection.xlsx",
+    lpc               = "inst/extdata/scenario/scenario3/produktivitas_lpc.xlsx",
+    io_changes        = "inst/extdata/scenario/scenario3/perubahan_io.xlsx"
+  )
+
+sc_input <- load_scenario_inputs(scenario_inputs, P_default)
+
+# Ekstraksi Vektor Sektoral Utuh
+sektor_names <- as.character(unlist(gdp_baseline$SECTOR))
+Y_0 <- as.numeric(unlist(gdp_baseline$FD)); names(Y_0) <- sektor_names
+x_0 <- as.numeric(unlist(gdp_baseline$OUTPUT)); names(x_0) <- sektor_names
+v_0 <- as.numeric(unlist(gdp_baseline$GDP)); names(v_0) <- sektor_names
+Land_0 <- as.numeric(unlist(gdp_baseline$Land_Requirement))
+LPC_0 <- as.numeric(unlist(gdp_baseline$LPC))
+
+# Matriks Transaksi Antara (Z)
+Z <- as.matrix(baseline$intermediate_consumption)
+storage.mode(Z) <- "numeric"
+rownames(Z) <- colnames(Z) <- sektor_names
+
+# Filtering Sektor Valid (Hanya Sektor dengan Output Baseline > 0)
+idx_valid <- which(x_0 > 0)
+Z <- Z[idx_valid, idx_valid, drop = FALSE]
+x_0 <- x_0[idx_valid]
+Y_0 <- Y_0[idx_valid]
+v_0 <- v_0[idx_valid]
+Land_0 <- Land_0[idx_valid]
+LPC_0 <- LPC_0[idx_valid]
+sektor_names <- sektor_names[idx_valid]
+n <- length(idx_valid)
+
+# EKSTRAKSI KOEFISIEN INPUT PRIMER LANGSUNG (KOREKSI REAL VALUE)
+# A. Koefisien PDRB / GDP
+v_c <- as.numeric(unlist(gdp_baseline$GDP_PROP))[idx_valid]
+
+# B. Koefisien Pendapatan Tenaga Kerja Langsung (w_c)
+w_c <- as.numeric(unlist(baseline$labour_multiplier$Labour_Compensation))[idx_valid] / x_0
+
+# C. Koefisien Serapan Tenaga Kerja Langsung (l_c) -> Satuan: Orang / Juta Rp
+l_c <- as.numeric(unlist(baseline$labour_multiplier$Labour))[idx_valid] / x_0
+
+# D. Koefisien Surplus Usaha Bruto Langsung (sub_c)
+sub_c <- as.numeric(unlist(baseline$SUB_multiplier$Surplus))[idx_valid] / x_0
+
+# Mapping Indeks Sektor Terkendala (co) dan Bebas (nc)
+constrained <- baseline$constrained
+unconstrained <- baseline$unconstrained
+co_idx <- which(idx_valid %in% which(constrained == 1))
+no_idx <- which(idx_valid %in% which(unconstrained == 1))
+
+# Reklasifikasi Sektor Bermasalah (Land_0 = 0 atau LPC_0 = 0 dipindahkan ke nc)
+mask_bermasalah <- (Land_0[co_idx] <= 0) | (LPC_0[co_idx] <= 0)
+if (any(mask_bermasalah)) {
+  co_idx_pindah <- co_idx[mask_bermasalah]
+  co_idx <- co_idx[!mask_bermasalah]
+  no_idx <- sort(c(no_idx, co_idx_pindah))
+}
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# ------------------------------------------------------------------------------
+# FORMULASI SUB-MATRIKS MIXED INPUT-OUTPUT
+# ------------------------------------------------------------------------------
+
+# Matriks Koefisien Teknis (A) dan Matriks Leontief (M = I - A)
+A_full <- sweep(Z, 2, x_0, "/")
+M_full <- diag(n) - A_full
+
+# Partisi Sub-matriks dan Inversi Sektor Non-Lahan
+idx_co <- co_idx
+idx_nc <- no_idx
+p_0_co <- as.numeric(LPC_0[idx_co])
+M_nc_co <- M_full[idx_nc, idx_co, drop = FALSE]
+M_nc_nc <- M_full[idx_nc, idx_nc, drop = FALSE]
+M_nc_nc_inv <- solve(M_nc_nc) # Inversi khusus sub-matriks unconstrained
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# ==============================================================================
+# SKRIP LENGKAP SKENARIO HILIRISASI: RESTRUCTURING & RAS MATRIX BALANCING
+# Pemodelan: Supply-Constrained Mixed Input-Output (Hubacek & Sun, 2001)
+# Balancing: Biproportional Matrix Balancing / RAS (Miller & Blair, 2009)
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# FUNGSI ALGORITMA RAS BALANCING
+# ------------------------------------------------------------------------------
+ras_balance_io <- function(A_0, x_target, u_target, v_target, tol = 1e-6, max_iter = 1000) {
+  # A_0      : Matriks Koefisien Teknis Awal (n x n)
+  # x_target : Vektor Total Output Target Baru (n x 1)
+  # u_target : Vektor Target Total Penjualan Antara Baris / Row Sum Z (n x 1)
+  # v_target : Vektor Target Total Pembelian Antara Kolom / Col Sum Z (n x 1)
+  
+  n <- length(x_target)
+  A_k <- A_0
+  iter <- 0
+  diff <- Inf
+  
+  while (diff > tol && iter < max_iter) {
+    iter <- iter + 1
+    
+    # 1. Hitung Matriks Transaksi Z_k
+    Z_k <- sweep(A_k, 2, x_target, "*")
+    
+    # 2. Penyesuaian Baris (Row Adjustment Factor - r)
+    u_k <- rowSums(Z_k)
+    r <- ifelse(u_k == 0, 1, u_target / u_k)
+    r[!is.finite(r)] <- 1
+    A_k <- sweep(A_k, 1, r, "*")
+    
+    # 3. Hitung Ulang Z_k setelah Penyesuaian Baris
+    Z_k <- sweep(A_k, 2, x_target, "*")
+    
+    # 4. Penyesuaian Kolom (Column Adjustment Factor - s)
+    v_k <- colSums(Z_k)
+    s <- ifelse(v_k == 0, 1, v_target / v_k)
+    s[!is.finite(s)] <- 1
+    A_k <- sweep(A_k, 2, s, "*")
+    
+    # 5. Evaluasi Konvergensi (Maksimum Selisih Margin)
+    Z_k <- sweep(A_k, 2, x_target, "*")
+    diff <- max(abs(c(rowSums(Z_k) - u_target, colSums(Z_k) - v_target)), na.rm = TRUE)
+  }
+  
+  # Hitung Invers Leontief Baru L = (I - A)^(-1)
+  L_k <- solve(diag(n) - A_k)
+  
+  list(
+    A_balanced = A_k,
+    Z_balanced = Z_k,
+    L_balanced = L_k,
+    iterations = iter,
+    max_diff = diff
+  )
+}
+
+# ------------------------------------------------------------------------------
+# FUNGSI MEMPROSES INPUT & REKALKULASI SISTEM I-O HASIL RAS
+# ------------------------------------------------------------------------------
+process_sc_ras_system <- function(df_input, Z_base, Y_base, VA_base, X_base, Labour_base, Wage_base, sektor_names) {
+  
+  # --- PENGAMAN DIMENSI ---
+  Z_base <- as.matrix(Z_base)
+  storage.mode(Z_base) <- "numeric"
+  if (is.null(dim(Z_base)) || length(dim(Z_base)) != 2) {
+    stop("Z_base harus berupa matriks 2 dimensi. Cek struktur input Z.")
+  }
+  
+  n <- length(sektor_names)
+  if (nrow(Z_base) != n || ncol(Z_base) != n) {
+    stop(sprintf("Dimensi Z_base (%dx%d) tidak cocok dengan jumlah sektor (%d).",
+                 nrow(Z_base), ncol(Z_base), n))
+  }
+  
+  # Pastikan X_base, Y_base, VA_base, Labour_base, Wage_base adalah vektor numerik
+  X_base      <- as.numeric(unlist(X_base))
+  Y_base      <- as.numeric(unlist(Y_base))
+  VA_base     <- as.numeric(unlist(VA_base))
+  Labour_base <- as.numeric(unlist(Labour_base))
+  Wage_base   <- as.numeric(unlist(Wage_base))
+  
+  if (length(X_base) != n) stop(sprintf("Panjang X_base (%d) != jumlah sektor (%d).", length(X_base), n))
+  if (length(Y_base) != n) stop(sprintf("Panjang Y_base (%d) != jumlah sektor (%d).", length(Y_base), n))
+  if (length(VA_base) != n) stop(sprintf("Panjang VA_base (%d) != jumlah sektor (%d).", length(VA_base), n))
+  
+  # --- FILTER INPUT ---
+  df_input <- df_input %>%
+    filter(!is.na(`SEKTOR ASAL (FROM SECTOR)`), `PENAMBAHAN TRANSAKSI ANTARA / ΔZ (Rp Juta)` > 0)
+  
+  Z_init <- Z_base
+  X_new  <- X_base
+  
+  # 2. Injeksi Pengalihan pada Z dan Target X
+  for (i in seq_len(nrow(df_input))) {
+    from_name <- df_input$`SEKTOR ASAL (FROM SECTOR)`[i]
+    to_name <- df_input$`SEKTOR TUJUAN (TO SECTOR)`[i]
+    delta_z <- as.numeric(df_input$`PENAMBAHAN TRANSAKSI ANTARA / ΔZ (Rp Juta)`[i])
+    delta_x_from <- as.numeric(df_input$`PERUBAHAN OUTPUT ASAL ΔX (Rp Juta)`[i])
+    delta_x_to <- as.numeric(df_input$`PERUBAHAN OUTPUT TUJUAN ΔX (Rp Juta)`[i])
+    
+    idx_from <- which(sektor_names == from_name)
+    idx_to <- which(sektor_names == to_name)
+    
+    if (length(idx_from) > 0 && length(idx_to) > 0) {
+      Z_init[idx_from, idx_to] <- Z_init[idx_from, idx_to] + delta_z
+      if (!is.na(delta_x_from)) X_new[idx_from] <- X_new[idx_from] + delta_x_from
+      if (!is.na(delta_x_to)) X_new[idx_to] <- X_new[idx_to] + delta_x_to
+    }
+  }
+  
+  # 3. Hitung Target Margin RAS (u_target & v_target)
+  u_target <- rowSums(Z_init)
+  v_target <- colSums(Z_init)
+  
+  # 4. Buat Matriks Koefisien Teknis Awal (A_0)
+  X_safe <- ifelse(X_base == 0, 1, X_base)
+  A_0 <- sweep(Z_base, 2, X_safe, "/")
+  
+  # 5. Eksekusi RAS Balancing
+  ras_res <- ras_balance_io(
+    A_0 = A_0,
+    x_target = X_new,
+    u_target = u_target,
+    v_target = v_target,
+    tol = 1e-6,
+    max_iter = 1000
+  )
+  
+  # 6. Hitung Residu Final Demand (Y_new) dan Value Added (VA_new)
+  Y_new <- X_new - rowSums(ras_res$Z_balanced)
+  VA_new <- X_new - colSums(ras_res$Z_balanced)
+  
+  # 7. Hitung Koefisien Input Primer Baru
+  X_safe_new <- ifelse(X_new == 0, 1, X_new)
+  v_c_new <- VA_new / X_safe_new
+  w_c_new <- Wage_base / X_safe_new
+  l_c_new <- Labour_base / X_safe_new
+  
+  # 8. Hitung Indeks Keterkaitan (Rasmussen Linkages) Baru
+  L_new <- ras_res$L_balanced
+  sum_L <- sum(L_new)
+  back_link <- (n * colSums(L_new)) / sum_L
+  forw_link <- (n * rowSums(L_new)) / sum_L
+  
+  list(
+    Z_new = ras_res$Z_balanced,
+    A_new = ras_res$A_balanced,
+    L_new = L_new,
+    X_new = X_new,
+    Y_new = Y_new,
+    VA_new = VA_new,
+    v_c_new = v_c_new,
+    w_c_new = w_c_new,
+    l_c_new = l_c_new,
+    output_multiplier = colSums(L_new),
+    backward_linkage = back_link,
+    forward_linkage = forw_link,
+    ras_iterations = ras_res$iterations,
+    ras_diff = ras_res$max_diff,
+    input_summary = df_input
+  )
+}
+
+# ------------------------------------------------------------------------------
+# FUNGSI PROYEKSI MIXED I-O MULTI-TAHUN
+# ------------------------------------------------------------------------------
+proyeksi_skenario_multi_fd <- function(area_matrix, P_matrix, Y_0, idx_co, idx_nc, 
+                                      p_0_co, M_nc_co, M_nc_nc_inv, A_full, v_c, 
+                                      w_c, l_c, sub_c, growth_rate, initial_year, tahun) {
+  t_max <- length(tahun)
+  n <- length(v_c)
+  m <- length(idx_co)
+  
+  x_out <- matrix(0, nrow = t_max, ncol = n)
+  PDRB_sektoral <- matrix(0, nrow = t_max, ncol = n)
+  Inc_sektoral <- matrix(0, nrow = t_max, ncol = n)
+  Lab_sektoral <- matrix(0, nrow = t_max, ncol = n)
+  SUB_sektoral <- matrix(0, nrow = t_max, ncol = n)
+  L_co_matrix <- matrix(0, nrow = t_max, ncol = m)
+  FD_co_matrix <- matrix(0, nrow = t_max, ncol = m)
+  
+  P_sub <- as.matrix(P_matrix[idx_co, , drop = FALSE])
+  storage.mode(P_sub) <- "numeric"
+  
+  for (k in seq_len(t_max)) {
+    yr <- tahun[k]
+    selisih_tahun <- yr - initial_year
+    
+    # Final Demand Sektor Non-Lahan
+    Y_nc_t <- Y_0[idx_nc] * ((1 + growth_rate[idx_nc]) ^ selisih_tahun)
+    
+    # Output Sektor Lahan Terkendalikan Tutupan Lahan BAU
+    luas_tutupan_t <- as.numeric(unlist(area_matrix[, k]))
+    L_co_t <- as.vector(P_sub %*% luas_tutupan_t)
+    x_co_t <- matrix(L_co_t * p_0_co, ncol = 1)
+    
+    # Solusi Simultana Mixed IO
+    rhs <- Y_nc_t - (M_nc_co %*% x_co_t)
+    x_nc_t <- M_nc_nc_inv %*% rhs
+    
+    # Output Total
+    x_t <- numeric(n)
+    x_t[idx_co] <- as.vector(x_co_t)
+    x_t[idx_nc] <- as.vector(x_nc_t)
+    
+    # Net Ekspor Lahan
+    konsumsi_antara_co <- as.vector(A_full[idx_co, , drop = FALSE] %*% x_t)
+    FD_co_t <- as.vector(x_co_t) - konsumsi_antara_co
+    
+    # Hitung Indikator Makroekonomi
+    PDRB_sektoral[k, ] <- v_c * x_t
+    Inc_sektoral[k, ]  <- w_c * x_t
+    Lab_sektoral[k, ]  <- l_c * x_t
+    SUB_sektoral[k, ]  <- sub_c * x_t
+    
+    x_out[k, ] <- x_t
+    L_co_matrix[k, ] <- L_co_t
+    FD_co_matrix[k, ] <- FD_co_t
+  }
+  
+  tibble(
+    Tahun = tahun,
+    PDRB_Total_Juta = rowSums(PDRB_sektoral, na.rm = TRUE),
+    Pendapatan_TK_Juta = rowSums(Inc_sektoral, na.rm = TRUE),
+    Serapan_TK_Orang = rowSums(Lab_sektoral, na.rm = TRUE),
+    Surplus_Usaha_Bruto_Juta = rowSums(SUB_sektoral, na.rm = TRUE),
+    Output_Total_Juta = rowSums(x_out, na.rm = TRUE)
+  )
+}
+
+# ------------------------------------------------------------------------------
+# EKSEKUSI PEMBENTUKAN SISTEM I-O BARU DENGAN RAS
+# ------------------------------------------------------------------------------
+labour_nominal <- as.numeric(unlist(baseline$labour_multiplier$Labour))[idx_valid]
+wage_nominal   <- as.numeric(unlist(baseline$labour_multiplier$Labour_Compensation))[idx_valid]
+
+sc_io_system <- process_sc_ras_system(
+  df_input     = sc_input$io_changes,
+  Z_base       = Z,             # matriks 65x65 hasil filter
+  Y_base       = Y_0,           # vektor FD hasil filter
+  VA_base      = v_0,           # vektor PDRB sektoral hasil filter
+  X_base       = x_0,           # vektor output hasil filter
+  Labour_base  = labour_nominal,
+  Wage_base    = wage_nominal,
+  sektor_names = sektor_names
+)
+
+cat("==================================================================\n")
+cat(sprintf("  Skenario Hilirisasi: RAS Balancing Konvergen pada Iterasi ke-%d\n",
+            sc_io_system$ras_iterations))
+cat(sprintf("   Maksimum Selisih Margin vs Target: %.10f\n",
+            sc_io_system$ras_diff))
+cat("==================================================================\n")
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# ------------------------------------------------------------------------------
+# EKSEKUSI PROYEKSI MULTI-TAHUN SKENARIO
+# ------------------------------------------------------------------------------
+# Partisi Sub-Matriks Mixed IO Baru dari Matriks A_new Hasil RAS
+A_nc_nc_sc <- sc_io_system$A_new[idx_nc, idx_nc]
+A_nc_co_sc <- sc_io_system$A_new[idx_nc, idx_co]
+
+M_nc_nc_inv_sc <- solve(diag(length(idx_nc)) - A_nc_nc_sc)
+M_nc_co_sc <- -A_nc_co_sc
+
+tahun_proyeksi <- as.numeric(colnames(baseline$area_matrix_bau))
+
+proyeksi_sc_df <- proyeksi_skenario_multi_fd(
+  area_matrix = baseline$area_matrix_bau,
+  P_matrix = baseline$P_default,   Y_0 = sc_io_system$Y_new,      # Permintaan Akhir Hasil RAS
+  idx_co = idx_co,
+  idx_nc = idx_nc,
+  p_0_co = p_0_co,
+  M_nc_co = M_nc_co_sc,           # Sub-matriks Mixed IO Baru
+  M_nc_nc_inv = M_nc_nc_inv_sc,  # Sub-Invers Baru
+  A_full = sc_io_system$A_new,   # Matriks A Baru
+  v_c = sc_io_system$v_c_new,    # Koefisien PDRB Baru
+  w_c = sc_io_system$w_c_new,    # Koefisien Gaji Baru
+  l_c = sc_io_system$l_c_new,    # Koefisien TK Baru
+  sub_c = sub_c,
+  growth_rate = growth_rate,
+  initial_year = 2025,
+  tahun = tahun_proyeksi
+)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# ------------------------------------------------------------------------------
+# CETAK HASIL REKAPITULASI & PERBANDINGAN BACKWARD LINKAGE
+# ------------------------------------------------------------------------------
+# 1. Tampilkan Rekapitutasi Makroekonomi
+print(as.data.frame(proyeksi_sc_df))
+
+# 2. Tampilkan Perbandingan Daya Tarik (Backward Linkage) Sektor Hilirisasi
+L_base <- as.matrix(baseline$leontief_matrix)
+storage.mode(L_base) <- "numeric"
+
+# Filter ke sektor valid
+L_base <- L_base[idx_valid, idx_valid, drop = FALSE]
+
+n_base <- nrow(L_base)
+sum_L_base <- sum(L_base)
+
+bl_baseline <- (n_base * colSums(L_base)) / sum_L_base
+
+df_linkage_compare <- data.frame(
+  Sektor = sektor_names,
+  Backward_Linkage_Baseline = as.numeric(bl_baseline),
+  Backward_Linkage_sc_RAS   = sc_io_system$backward_linkage,
+  Output_Multiplier_sc_RAS  = sc_io_system$output_multiplier
+) %>%
+  filter(Sektor %in% c(
+    "Padi", "Penggilingan Padi", "Jagung",
+    "Jasa Tempat Makan / Restoran",
+    "Karet dan tanaman tahunan lainnya", "Pengolahan Karet"
+  ))
+
+cat("\n--- PERBANDINGAN DAYA TARIK (BACKWARD LINKAGE) SEBELUM VS SESUDAH HILIRISASI ---\n")
+print(df_linkage_compare)
+```
