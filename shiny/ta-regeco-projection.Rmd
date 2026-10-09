@@ -1,0 +1,372 @@
+---
+title: "Regional Economic Projection Report"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    df_print: kable
+params:
+  start_time: NA
+  end_time: NA
+  scenario_name: NA
+  assumption_active: NA
+  initial_year: NA
+  end_year: NA
+  time_step: NA
+  unit: NA
+  location: NA
+  years: NA
+  sector_names: NA
+  result_scenario: NA     # tibble hasil proyeksi skenario
+  result_bau: NA          # tibble hasil proyeksi BAU
+  recap_scenario: NA      # tibble rekap per tahun (skenario)
+  recap_bau: NA           # tibble rekap per tahun (BAU)
+  indicator_labels: NA    # named list label indikator
+  linkage_before: NA      # vektor BL baseline (opsional, hanya A3)
+  linkage_after: NA       # vektor BL setelah RAS (opsional, hanya A3)
+  output_dir: NA
+---
+
+```{r setup, include=FALSE, warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+library(knitr)
+library(kableExtra)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(scales)
+library(DT)
+library(plotly)
+library(bslib)
+library(htmltools)
+
+if (requireNamespace("TARegEco", quietly = TRUE)) {
+  library(TARegEco)
+} else {
+  devtools::load_all(".")
+}
+
+# Ekstrak parameter
+result_scenario  <- params$result_scenario
+result_bau       <- params$result_bau
+recap_scenario   <- params$recap_scenario
+recap_bau        <- params$recap_bau
+indicator_labels <- params$indicator_labels
+sector_names     <- params$sector_names
+years            <- params$years
+active_assumptions <- params$assumption_active
+
+# Agregasi by year: sum semua sektor
+agg_by_year <- function(df, col) {
+  df |> dplyr::group_by(YEAR) |>
+    dplyr::summarise(Total = sum(.data[[col]], na.rm = TRUE), .groups = "drop")
+}
+
+# Siapkan seri per indikator
+build_series <- function(col) {
+  b <- agg_by_year(result_bau, col) |> dplyr::mutate(Seri = "BAU")
+  s <- agg_by_year(result_scenario, col) |> dplyr::mutate(Seri = "Skenario")
+  dplyr::bind_rows(b, s)
+}
+
+ind_cols   <- c("GDP", "LABOUR", "INCOME", "SURPLUS", "OUTPUT")
+ind_names  <- c("PDRB", "Serapan TK", "Pendapatan TK", "Surplus Usaha", "Output")
+
+has_a3 <- "A3" %in% active_assumptions
+```
+
+
+<details>
+
+<summary>Klik di sini untuk Log Analisis</summary>
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+analysis_log <- tibble::tribble(
+  ~Kategori,                    ~Keterangan,
+  "Waktu Mulai Analisis",       params$start_time,
+  "Waktu Selesai Analisis",     params$end_time,
+  "Skenario",                   params$scenario_name,
+  "Asumsi Aktif",               paste(active_assumptions, collapse = " + "),
+  "Tahun Awal",                 as.character(params$initial_year),
+  "Tahun Akhir",                as.character(params$end_year),
+  "Interval",                   paste0(params$time_step, " tahun"),
+  "Lokasi",                     as.character(params$location),
+  "Satuan",                     as.character(params$unit),
+  "Direktori Output",           params$output_dir
+)
+
+analysis_log %>%
+  kbl(caption = "Log Analisis", escape = FALSE) %>%
+  kable_paper("hover", full_width = FALSE)
+```
+
+</details>
+
+# Pendahuluan
+
+Laporan ini menyajikan hasil proyeksi ekonomi regional untuk `r params$location` dengan skenario `r params$scenario_name`. Analisis menggunakan model Supply-Constrained Mixed Input-Output (Hubacek & Sun, 2001) untuk memproyeksikan indikator makroekonomi regional pada periode `r params$initial_year`–`r params$end_year`.
+
+Asumsi yang diaktifkan: `r paste(active_assumptions, collapse = ", ")`
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+descriptions <- c(
+  "BAU" = "**BAU (Business As Usual)** — Baseline tanpa intervensi; hanya tutupan lahan BAU yang digunakan.",
+  "A1"  = "**Asumsi 1 (Perubahan Lahan)** — Perubahan luas/distribusi tutupan lahan memengaruhi output sektor berbasis lahan.",
+  "A2"  = "**Asumsi 2 (Peningkatan Produktivitas)** — Peningkatan LPC (Land Productivity Coefficient) secara bertahap menuju target.",
+  "A3"  = "**Asumsi 3 (Hilirisasi)** — Restrukturisasi tabel Input-Output via RAS balancing yang mengubah struktur keterkaitan antar sektor."
+)
+
+for (a in active_assumptions) {
+  if (a %in% names(descriptions)) {
+    cat("- ", descriptions[[a]], "\n", sep = "")
+  }
+}
+```
+
+
+# Ringkasan
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Hitung agregat per indikator di tahun awal & akhir
+summary_row <- function(df, col, label) {
+  d <- agg_by_year(df, col)
+  tibble::tibble(
+    Indikator        = label,
+    Nilai_Awal       = d$Total[1],
+    Nilai_Akhir      = d$Total[nrow(d)],
+    Pertumbuhan_Pct  = (d$Total[nrow(d)] / d$Total[1] - 1) * 100
+  )
+}
+
+sum_bau <- purrr::map2_dfr(ind_cols, ind_names, ~ summary_row(result_bau, .x, .y)) |>
+  dplyr::mutate(Skenario = "BAU")
+
+sum_sc  <- purrr::map2_dfr(ind_cols, ind_names, ~ summary_row(result_scenario, .x, .y)) |>
+  dplyr::mutate(Skenario = "Skenario")
+
+sum_all <- dplyr::bind_rows(sum_bau, sum_sc) |>
+  dplyr::select(Skenario, Indikator, Nilai_Awal, Nilai_Akhir, Pertumbuhan_Pct)
+
+sum_all %>%
+  kbl(
+    caption = paste0("Ringkasan Eksekutif: Nilai Awal (", params$initial_year, 
+                     ") vs Nilai Akhir (", params$end_year, ")"),
+    digits = 2,
+    format.args = list(big.mark = ",", decimal.mark = ".")
+  ) %>%
+  kable_paper("hover", full_width = FALSE) %>%
+  column_spec(1:5, width = "auto")
+```
+
+# Perbandingan BAU vs Skenario
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+plot_list <- list()
+
+for (i in seq_along(ind_cols)) {
+  col   <- ind_cols[i]
+  label <- indicator_labels[[col]]
+  
+  d <- build_series(col)
+  d$Seri <- factor(d$Seri, levels = c("BAU", "Skenario"))
+  
+  p <- ggplot(d, aes(x = YEAR, y = Total, color = Seri, group = Seri)) +
+    geom_line(linewidth = 1.2) +
+    geom_point(size = 2) +
+    scale_x_continuous(breaks = unique(d$YEAR)) +
+    scale_y_continuous(labels = scales::comma) +
+    scale_color_manual(values = c("BAU" = "#7f8c8d", "Skenario" = "#27ae60")) +
+    theme_minimal(base_size = 12) +
+    labs(
+      title = paste("Proyeksi", label),
+      x = "Tahun", y = label, color = NULL
+    )
+  
+  plot_list[[i]] <- p
+}
+
+# Grid 2 kolom
+gridExtra::grid.arrange(grobs = plot_list, ncol = 2)
+```
+
+# Tabel Rekapitulasi per Indikator {.tabset}
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+for (i in seq_along(ind_cols)) {
+  col   <- ind_cols[i]
+  label <- indicator_labels[[col]]
+  
+  b <- agg_by_year(result_bau, col) |> dplyr::rename(BAU = Total)
+  s <- agg_by_year(result_scenario, col) |> dplyr::rename(Skenario = Total)
+  
+  m <- dplyr::left_join(b, s, by = "YEAR") |>
+    dplyr::mutate(
+      `Selisih (%)` = sprintf("%+.2f%%", (Skenario / BAU - 1) * 100)
+    )
+  
+  # Cetak header sebagai Markdown mentah
+  cat("\n\n## ", label, "\n\n", sep = "")
+  
+  # Cetak tabel sebagai HTML mentah
+  cat(
+    m %>%
+      kbl(
+        caption = paste("Rekapitulasi", label),
+        digits = 2,
+        format.args = list(big.mark = ",", decimal.mark = ".")
+      ) %>%
+      kable_paper("hover", full_width = FALSE) %>%
+      as.character()
+  )
+  cat("\n\n")
+}
+```
+
+# Analisis Sektoral {.tabset}
+
+## PDRB per Sektor
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+sector_summary <- result_scenario |>
+  dplyr::group_by(SECTOR) |>
+  dplyr::summarise(
+    GDP_Awal  = GDP[YEAR == min(YEAR)],
+    GDP_Akhir = GDP[YEAR == max(YEAR)],
+    .groups = "drop"
+  ) |>
+  dplyr::mutate(
+    Pertumbuhan_Pct = (GDP_Akhir / GDP_Awal - 1) * 100
+  ) |>
+  dplyr::arrange(dplyr::desc(GDP_Akhir))
+
+# Top 20 saja
+top20 <- head(sector_summary, 20)
+
+DT::datatable(
+  top20,
+  rownames = FALSE,
+  caption = "Top 20 Sektor berdasarkan PDRB Akhir (Skenario)",
+  options = list(pageLength = 20, dom = 'tip', scrollX = TRUE)
+) |>
+  DT::formatRound(c("GDP_Awal", "GDP_Akhir"), digits = 2, mark = ",") |>
+  DT::formatRound("Pertumbuhan_Pct", digits = 2)
+```
+
+## Serapan Tenaga Kerja per Sektor
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+lab_summary <- result_scenario |>
+  dplyr::group_by(SECTOR) |>
+  dplyr::summarise(
+    TK_Awal  = LABOUR[YEAR == min(YEAR)],
+    TK_Akhir = LABOUR[YEAR == max(YEAR)],
+    .groups = "drop"
+  ) |>
+  dplyr::mutate(
+    Pertumbuhan_Pct = (TK_Akhir / TK_Awal - 1) * 100
+  ) |>
+  dplyr::arrange(dplyr::desc(TK_Akhir))
+
+top20_lab <- head(lab_summary, 20)
+
+DT::datatable(
+  top20_lab,
+  rownames = FALSE,
+  caption = "Top 20 Sektor berdasarkan Serapan Tenaga Kerja Akhir",
+  options = list(pageLength = 20, dom = 'tip', scrollX = TRUE)
+) |>
+  DT::formatRound(c("TK_Awal", "TK_Akhir"), digits = 0, mark = ",") |>
+  DT::formatRound("Pertumbuhan_Pct", digits = 2)
+```
+
+## Output per Sektor
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+out_summary <- result_scenario |>
+  dplyr::group_by(SECTOR) |>
+  dplyr::summarise(
+    Output_Awal  = OUTPUT[YEAR == min(YEAR)],
+    Output_Akhir = OUTPUT[YEAR == max(YEAR)],
+    .groups = "drop"
+  ) |>
+  dplyr::mutate(
+    Pertumbuhan_Pct = (Output_Akhir / Output_Awal - 1) * 100
+  ) |>
+  dplyr::arrange(dplyr::desc(Output_Akhir))
+
+top20_out <- head(out_summary, 20)
+
+DT::datatable(
+  top20_out,
+  rownames = FALSE,
+  caption = "Top 20 Sektor berdasarkan Output Akhir",
+  options = list(pageLength = 20, dom = 'tip', scrollX = TRUE)
+) |>
+  DT::formatRound(c("Output_Awal", "Output_Akhir"), digits = 2, mark = ",") |>
+  DT::formatRound("Pertumbuhan_Pct", digits = 2)
+```
+
+<!-- # Analisis Linkage (Asumsi 3: Hilirisasi) {.tabset .tabset-pills} -->
+<!-- ```{r, echo=FALSE, message=FALSE, warning=FALSE} -->
+<!-- bl_before <- params$linkage_before -->
+<!-- bl_after  <- params$linkage_after -->
+
+<!-- if (!is.null(bl_before) && !is.null(bl_after) &&  -->
+<!--     length(bl_before) == length(bl_after)) { -->
+
+<!--   linkage_df <- data.frame( -->
+<!--     Sektor     = sector_names, -->
+<!--     BL_Sebelum = as.numeric(bl_before), -->
+<!--     BL_Sesudah = as.numeric(bl_after), -->
+<!--     Delta      = as.numeric(bl_after) - as.numeric(bl_before) -->
+<!--   ) -->
+
+<!--   # Ambil top 15 perubahan -->
+<!--   top_change <- linkage_df[order(-abs(linkage_df$Delta)), ][1:min(15, nrow(linkage_df)), ] -->
+
+<!--   # Data long untuk plot -->
+<!--   top_long <- tidyr::pivot_longer( -->
+<!--     top_change, -->
+<!--     cols = c("BL_Sebelum", "BL_Sesudah"), -->
+<!--     names_to = "Status", values_to = "Indeks" -->
+<!--   ) -->
+<!--   top_long$Status <- factor( -->
+<!--     ifelse(top_long$Status == "BL_Sebelum", "Sebelum", "Sesudah"), -->
+<!--     levels = c("Sebelum", "Sesudah") -->
+<!--   ) -->
+
+<!--   # Plot -->
+<!--   p <- ggplot(top_long, aes(x = reorder(Sektor, Indeks), y = Indeks, fill = Status)) + -->
+<!--     geom_col(position = "dodge") + -->
+<!--     geom_hline(yintercept = 1, linetype = "dashed", color = "red") + -->
+<!--     coord_flip() + -->
+<!--     scale_fill_manual(values = c(Sebelum = "#bdc3c7", Sesudah = "#27ae60")) + -->
+<!--     theme_minimal(base_size = 12) + -->
+<!--     labs( -->
+<!--       title = "Perubahan Backward Linkage (Top 15)", -->
+<!--       x = NULL, y = "Indeks Backward Linkage", fill = NULL -->
+<!--     ) -->
+
+<!--   print(p) -->
+
+<!--   cat("\n\n") -->
+
+<!--   # Tabel -->
+<!--   dt_top <- top_change -->
+<!--   dt_top$Delta <- sprintf("%+.4f", dt_top$Delta) -->
+
+<!--   print( -->
+<!--     dt_top %>% -->
+<!--       kbl( -->
+<!--         caption = "Perubahan Backward Linkage per Sektor (Top 15)", -->
+<!--         digits = 4, -->
+<!--         format.args = list(big.mark = ",", decimal.mark = ".") -->
+<!--       ) %>% -->
+<!--       kable_paper("hover", full_width = FALSE) -->
+<!--   ) -->
+<!-- } else { -->
+<!--   cat("_Data linkage tidak tersedia._\n") -->
+<!-- } -->
+<!-- ``` -->
+
+<font size="1"> LUMENS adalah perangkat lunak bebas dan disediakan TANPA JAMINAN APAPUN. Pengguna bertanggung jawab atas hasil yang dihasilkan. Hasil bergantung pada kualitas data input ("garbage in, garbage out") dan dapat bervariasi atau sensitif terhadap parameter yang digunakan. </font>
