@@ -420,3 +420,405 @@ run_projection <- function(
   
   return(final_result)
 }
+
+#' Run projection Scenario (Supply-Constrained Mixed Input-Output Model)
+#'
+#' Menerima kombinasi bebas dari skenario BAU, Asumsi 1, Asumsi 2, dan Asumsi 3.
+#' Semua parameter skenario bersifat opsional. Fungsi akan otomatis mengaktifkan
+#' logika yang sesuai berdasarkan parameter yang tidak NULL.
+#'
+#' Kombinasi yang didukung:
+#' \enumerate{
+#'   \item BAU saja                              (area_bau, lpc=NULL,  io=NULL)
+#'   \item BAU + A1                              (area_sc,  lpc=NULL,  io=NULL)
+#'   \item BAU + A1 + A2                         (area_sc,  lpc=...,  io=NULL)
+#'   \item BAU + A1 + A3                         (area_sc,  lpc=NULL,  io=...)
+#'   \item BAU + A2                              (area_bau, lpc=...,  io=NULL)
+#'   \item BAU + A2 + A3                         (area_bau, lpc=...,  io=...)
+#'   \item BAU + A3                              (area_bau, lpc=NULL,  io=...)
+#' }
+#'
+#' @param gdp_baseline Data frame. Baseline GDP table.
+#' @param income_multiplier,labour_multiplier,SUB_multiplier,output_multiplier,linkage_table
+#'   Data frame. Tabel multiplier & linkage baseline.
+#' @param leontief_matrix Numeric matrix. Baseline Leontief inverse (unused).
+#' @param full_io_table Numeric matrix. Z matrix lengkap.
+#' @param sector_idx Integer vector. Indeks sektor di full IO table.
+#' @param P_baseline Numeric matrix. Proporsi lahan baseline [n_sektor x n_tutupan].
+#' @param area_matrix_bau Numeric matrix. Luas lahan BAU [n_tutupan x n_tahun].
+#' @param growth_rate Numeric vector. Growth rate permintaan akhir baseline.
+#' @param constrained,unconstrained Integer vector. Indikator co/nc.
+#'
+#' @param P_scenario Numeric matrix atau NULL. Proporsi lahan skenario (Asumsi 1).
+#' @param area_matrix_scenario Numeric matrix atau NULL. Luas lahan skenario (Asumsi 1).
+#' @param lpc_scenario Data frame atau NULL. Target LPC baru (Asumsi 2).
+#' @param lpc_target_year Integer atau NULL. Tahun target LPC (Asumsi 2). Default: tahun terakhir.
+#' @param io_changes Data frame atau NULL. ΔZ & ΔX skenario (Asumsi 3).
+#' @param growth_rate_scenario Numeric vector atau NULL. Override growth rate.
+#'
+#' @return Tibble hasil proyeksi per (tahun × sektor) dengan kolom:
+#'   YEAR, SECTOR, LAND_REQUIREMENT, LPC, LPC_GROWTH_RATE, FD, OUTPUT,
+#'   GDP, INCOME, LABOUR, SURPLUS, ITBL, ITFL. Plus attribute diagnostik.
+#'
+#' @export
+run_projection_scenario <- function(
+    # --- Baseline wajib ---
+  gdp_baseline,
+  income_multiplier,
+  labour_multiplier,
+  SUB_multiplier,
+  output_multiplier,
+  linkage_table,
+  leontief_matrix,
+  full_io_table,
+  sector_idx,
+  P_baseline,
+  area_matrix_bau,
+  growth_rate,
+  constrained     = NULL,
+  unconstrained   = NULL,
+  
+  # --- Asumsi 1: Perubahan Lahan ---
+  P_scenario           = NULL,
+  area_matrix_scenario = NULL,
+  
+  # --- Asumsi 2: Peningkatan Produktivitas ---
+  lpc_scenario    = NULL,
+  lpc_target_year = NULL,
+  
+  # --- Asumsi 3: Hilirisasi ---
+  io_changes = NULL,
+  
+  # --- Override opsional ---
+  growth_rate_scenario = NULL
+) {
+  
+  # ==========================================================================
+  # 0. LOG SKENARIO AKTIF (untuk debugging & Shiny)
+  # ==========================================================================
+  use_a1 <- !is.null(area_matrix_scenario)
+  use_a2 <- !is.null(lpc_scenario) && nrow(lpc_scenario) > 0
+  use_a3 <- !is.null(io_changes)   && nrow(io_changes)   > 0
+  
+  active_assumptions <- c(
+    if (use_a1) "A1",
+    if (use_a2) "A2",
+    if (use_a3) "A3"
+  )
+  if (length(active_assumptions) == 0) active_assumptions <- "BAU"
+  
+  message(sprintf("[run_projection] Asumsi aktif: %s",
+                  paste(active_assumptions, collapse = " + ")))
+  
+  # ==========================================================================
+  # 1. PERSIAPAN DIMENSI & VEKTOR BASELINE
+  # ==========================================================================
+  
+  # ---- Area matrix: pakai scenario jika ada, fallback ke BAU ----
+  area_matrix <- if (use_a1) area_matrix_scenario else area_matrix_bau
+  
+  years <- sort(as.numeric(colnames(area_matrix)))
+  t_max <- length(years)
+  time_step <- if (length(years) > 1) years[2] - years[1] else 1
+  
+  initial_year <- if (!is.null(getOption("initial_year"))) {
+    getOption("initial_year")
+  } else {
+    years[1] - time_step
+  }
+  
+  # ---- P matrix: pakai scenario jika ada, fallback ke baseline ----
+  P <- if (!is.null(P_scenario)) P_scenario else P_baseline
+  
+  # ---- Ekstraksi vektor ----
+  sektor_names <- as.character(unlist(gdp_baseline$SECTOR))
+  Y_0    <- as.numeric(unlist(gdp_baseline$FD));      names(Y_0)    <- sektor_names
+  x_0    <- as.numeric(unlist(gdp_baseline$OUTPUT));  names(x_0)    <- sektor_names
+  v_0    <- as.numeric(unlist(gdp_baseline$GDP));     names(v_0)    <- sektor_names
+  Land_0 <- as.numeric(unlist(gdp_baseline$Land_Requirement))
+  LPC_0  <- as.numeric(unlist(gdp_baseline$LPC))
+  
+  # ---- Z matrix ----
+  Z <- as.matrix(full_io_table); storage.mode(Z) <- "numeric"
+  rownames(Z) <- colnames(Z) <- sektor_names
+  
+  # ---- Filter sektor dummy ----
+  idx_valid    <- which(x_0 > 0)
+  Z            <- Z[idx_valid, idx_valid, drop = FALSE]
+  x_0          <- x_0[idx_valid]
+  Y_0          <- Y_0[idx_valid]
+  v_0          <- v_0[idx_valid]
+  Land_0       <- Land_0[idx_valid]
+  LPC_0        <- LPC_0[idx_valid]
+  sektor_names <- sektor_names[idx_valid]
+  n            <- length(idx_valid)
+  
+  # ---- Koefisien input primer ----
+  v_c   <- as.numeric(unlist(gdp_baseline$GDP_PROP))[idx_valid]
+  w_c   <- as.numeric(unlist(labour_multiplier$Labour_Compensation))[idx_valid] / x_0
+  l_c   <- as.numeric(unlist(labour_multiplier$Labour))[idx_valid] / x_0
+  sub_c <- as.numeric(unlist(SUB_multiplier$Surplus))[idx_valid] / x_0
+  
+  # Vektor nominal untuk RAS
+  labour_nominal <- as.numeric(unlist(labour_multiplier$Labour))[idx_valid]
+  wage_nominal   <- as.numeric(unlist(labour_multiplier$Labour_Compensation))[idx_valid]
+  
+  # ---- Growth rate: override jika ada ----
+  gr_vec <- if (!is.null(growth_rate_scenario)) growth_rate_scenario else growth_rate
+  gr_vec <- as.numeric(unlist(gr_vec))
+  if (length(gr_vec) != nrow(gdp_baseline)) {
+    warning("Panjang growth_rate tidak sesuai, fallback ke 0.")
+    gr_vec <- rep(0, nrow(gdp_baseline))
+  }
+  gr_vec <- gr_vec[idx_valid]
+  gr_vec[is.na(gr_vec)] <- 0
+  
+  # ==========================================================================
+  # 2. IDENTIFIKASI SEKTOR CO / NC
+  # ==========================================================================
+  if (is.null(constrained) || is.null(unconstrained)) {
+    constrained   <- as.integer(LPC_0 > 0 & Land_0 > 0)
+    unconstrained <- as.integer(!(LPC_0 > 0 & Land_0 > 0))
+  }
+  
+  co_idx <- which(idx_valid %in% which(constrained == 1))
+  no_idx <- which(idx_valid %in% which(unconstrained == 1))
+  
+  mask_bermasalah <- (Land_0[co_idx] <= 0) | (LPC_0[co_idx] <= 0)
+  if (any(mask_bermasalah)) {
+    co_idx_pindah <- co_idx[mask_bermasalah]
+    co_idx        <- co_idx[!mask_bermasalah]
+    no_idx        <- sort(c(no_idx, co_idx_pindah))
+  }
+  
+  idx_co <- co_idx
+  idx_nc <- no_idx
+  p_0_co <- as.numeric(LPC_0[idx_co])
+  m      <- length(idx_co)
+  
+  # ==========================================================================
+  # 3. FORMULASI MATRIKS LEONTIEF BASELINE
+  # ==========================================================================
+  A_full <- sweep(Z, 2, x_0, "/")
+  M_full <- diag(n) - A_full
+  B_full <- solve(M_full)
+  
+  col_sum_B   <- colSums(B_full)
+  row_sum_B   <- rowSums(B_full)
+  total_sum_B <- sum(B_full)
+  ITBL_vector <- (n * col_sum_B) / total_sum_B
+  ITFL_vector <- (n * row_sum_B) / total_sum_B
+  
+  # ==========================================================================
+  # 4. ASUMSI 3: OVERRIDE SISTEM IO VIA RAS
+  # ==========================================================================
+  sc_io_system <- NULL
+  
+  if (use_a3) {
+    message("[run_projection] Menjalankan RAS balancing (Asumsi 3)...")
+    
+    sc_io_system <- process_sc_ras_system(
+      df_input     = io_changes,
+      Z_base       = Z,
+      X_base       = x_0,
+      Labour_base  = labour_nominal,
+      Wage_base    = wage_nominal,
+      sektor_names = sektor_names
+    )
+    
+    message(sprintf("  ✓ RAS iterasi=%d, max diff=%.3e",
+                    sc_io_system$ras_iterations, sc_io_system$ras_diff))
+    
+    # Override parameter sistem IO
+    A_full      <- sc_io_system$A_new
+    M_full      <- diag(n) - A_full
+    B_full      <- sc_io_system$L_new
+    v_c         <- sc_io_system$v_c_new
+    w_c         <- sc_io_system$w_c_new
+    l_c         <- sc_io_system$l_c_new
+    Y_0         <- sc_io_system$Y_new
+    x_0         <- sc_io_system$X_new
+    ITBL_vector <- sc_io_system$backward_linkage
+    ITFL_vector <- sc_io_system$forward_linkage
+  }
+  
+  # ==========================================================================
+  # 5. SUB-PARTISI (SETELAH OVERRIDE A3)
+  # ==========================================================================
+  M_nc_co     <- M_full[idx_nc, idx_co, drop = FALSE]
+  M_nc_nc     <- M_full[idx_nc, idx_nc, drop = FALSE]
+  M_nc_nc_inv <- solve(M_nc_nc)
+  
+  P_sub <- as.matrix(P[idx_co, , drop = FALSE])
+  storage.mode(P_sub) <- "numeric"
+  
+  # ==========================================================================
+  # 6. ASUMSI 2: SIAPKAN LPC TARGET & TAHUN TARGET
+  # ==========================================================================
+  p_0_co_target <- p_0_co
+  target_year   <- if (!is.null(lpc_target_year)) lpc_target_year else max(years)
+  
+  if (use_a2) {
+    message("[run_projection] Menyiapkan LPC target (Asumsi 2)...")
+    
+    # Deteksi nama kolom LPC fleksibel
+    lpc_col <- NULL
+    candidates <- c(
+      "LPC SKENARIO 2 (Rp Juta/Ha)",
+      "LPC_S2", "LPC", "LPC_Scenario", "LPC Scenario"
+    )
+    for (cand in candidates) {
+      if (cand %in% colnames(lpc_scenario)) {
+        lpc_col <- lpc_scenario[[cand]]
+        break
+      }
+    }
+    
+    if (is.null(lpc_col)) {
+      warning("Kolom LPC tidak ditemukan di lpc_scenario. Asumsi 2 diabaikan.")
+      use_a2 <- FALSE
+      active_assumptions <- setdiff(active_assumptions, "A2")
+    } else {
+      lpc_new <- as.numeric(lpc_col)
+      
+      # --- Handle panjang berbeda ---
+      if (length(lpc_new) == nrow(gdp_baseline)) {
+        lpc_new <- lpc_new[idx_valid]
+      } else if (length(lpc_new) == n) {
+        # sudah match, ok
+      } else {
+        warning(sprintf(
+          "Panjang vektor LPC skenario (%d) != jumlah sektor baseline (%d) atau valid (%d).",
+          length(lpc_new), nrow(gdp_baseline), n
+        ))
+        use_a2 <- FALSE
+      }
+      
+      if (use_a2) {
+        lpc_new[is.na(lpc_new)] <- 0
+        
+        # Fallback: jika nol, pakai baseline (jangan collapse)
+        zero_mask <- lpc_new == 0
+        lpc_new[zero_mask] <- LPC_0[zero_mask]
+        
+        p_0_co_target <- as.numeric(lpc_new[idx_co])
+        
+        message(sprintf("  ✓ LPC target disiapkan untuk %d sektor co (interpolasi %d → %d)",
+                        length(p_0_co_target), initial_year, target_year))
+      }
+    }
+  }
+  
+  # ==========================================================================
+  # 7. ITERASI PROYEKSI
+  # ==========================================================================
+  x_out             <- matrix(0, nrow = t_max, ncol = n)
+  PDRB_sektoral     <- matrix(0, nrow = t_max, ncol = n)
+  Inc_sektoral      <- matrix(0, nrow = t_max, ncol = n)
+  Lab_sektoral      <- matrix(0, nrow = t_max, ncol = n)
+  SUB_sektoral      <- matrix(0, nrow = t_max, ncol = n)
+  L_co_matrix       <- matrix(0, nrow = t_max, ncol = m)
+  LPC_growth_matrix <- matrix(0, nrow = t_max, ncol = m)
+  LPC_t_matrix      <- matrix(0, nrow = t_max, ncol = m)
+  
+  for (k in seq_len(t_max)) {
+    yr            <- years[k]
+    selisih_tahun <- yr - initial_year
+    
+    # --- A. FD sektor nc ---
+    Y_nc_t <- Y_0[idx_nc] * ((1 + gr_vec[idx_nc]) ^ selisih_tahun)
+    
+    # --- B. LPC dinamis untuk A2, statis untuk lainnya ---
+    if (use_a2 && yr > initial_year) {
+      if (yr >= target_year) {
+        p_0_co_t <- p_0_co_target
+      } else {
+        prop     <- (yr - initial_year) / (target_year - initial_year)
+        p_0_co_t <- p_0_co + prop * (p_0_co_target - p_0_co)
+      }
+      lpc_gr_vec <- (p_0_co_t / p_0_co) - 1
+    } else {
+      p_0_co_t   <- p_0_co
+      lpc_gr_vec <- rep(0, m)
+    }
+    
+    # --- C. Output sektor co dibatasi lahan ---
+    luas_tutupan_t <- as.numeric(unlist(area_matrix[, k]))
+    L_co_t         <- as.vector(P_sub %*% luas_tutupan_t)
+    x_co_t         <- matrix(L_co_t * p_0_co_t, ncol = 1)
+    
+    # --- D. Mixed IO solve ---
+    rhs    <- Y_nc_t - (M_nc_co %*% x_co_t)
+    x_nc_t <- M_nc_nc_inv %*% rhs
+    
+    # --- E. Rekonstruksi output ---
+    x_t         <- numeric(n)
+    x_t[idx_co] <- as.vector(x_co_t)
+    x_t[idx_nc] <- as.vector(x_nc_t)
+    
+    # --- F. Multi-indikator ---
+    PDRB_sektoral[k, ]     <- v_c * x_t
+    Inc_sektoral[k, ]      <- w_c * x_t
+    Lab_sektoral[k, ]      <- l_c * x_t
+    SUB_sektoral[k, ]      <- sub_c * x_t
+    x_out[k, ]             <- x_t
+    L_co_matrix[k, ]       <- L_co_t
+    LPC_growth_matrix[k, ] <- lpc_gr_vec
+    LPC_t_matrix[k, ]      <- p_0_co_t
+  }
+  
+  # ==========================================================================
+  # 8. REKAPITULASI HASIL
+  # ==========================================================================
+  results_list <- list()
+  
+  for (k in seq_len(t_max)) {
+    yr <- years[k]
+    
+    land_req_t         <- numeric(n)
+    land_req_t[idx_co] <- L_co_matrix[k, ]
+    
+    lpc_growth_t         <- numeric(n)
+    lpc_growth_t[idx_co] <- LPC_growth_matrix[k, ]
+    
+    lpc_t         <- numeric(n)
+    lpc_t[idx_co] <- LPC_t_matrix[k, ]
+    
+    results_list[[as.character(yr)]] <- tibble::tibble(
+      YEAR             = yr,
+      SECTOR           = sektor_names,
+      LAND_REQUIREMENT = land_req_t,
+      LPC              = lpc_t,
+      LPC_GROWTH_RATE  = lpc_growth_t,
+      FD               = Y_0,
+      OUTPUT           = x_out[k, ],
+      GDP              = PDRB_sektoral[k, ],
+      INCOME           = Inc_sektoral[k, ],
+      LABOUR           = Lab_sektoral[k, ],
+      SURPLUS          = SUB_sektoral[k, ],
+      ITBL             = ITBL_vector,
+      ITFL             = ITFL_vector
+    )
+  }
+  
+  final_result <- do.call(rbind, results_list) |>
+    dplyr::mutate(
+      dplyr::across(where(is.numeric), ~ ifelse(!is.finite(.x), 0, .x))
+    )
+  
+  # ==========================================================================
+  # 9. METADATA (untuk Shiny / debugging)
+  # ==========================================================================
+  attr(final_result, "active_assumptions") <- active_assumptions
+  attr(final_result, "use_a1") <- use_a1
+  attr(final_result, "use_a2") <- use_a2
+  attr(final_result, "use_a3") <- use_a3
+  attr(final_result, "ras_iterations") <- if (!is.null(sc_io_system)) sc_io_system$ras_iterations else NA
+  attr(final_result, "ras_diff")       <- if (!is.null(sc_io_system)) sc_io_system$ras_diff       else NA
+  attr(final_result, "backward_linkage") <- if (!is.null(sc_io_system)) sc_io_system$backward_linkage else ITBL_vector
+  attr(final_result, "forward_linkage")  <- if (!is.null(sc_io_system)) sc_io_system$forward_linkage  else ITFL_vector
+  attr(final_result, "sector_names")     <- sektor_names
+  attr(final_result, "years")            <- years
+  
+  return(final_result)
+}
