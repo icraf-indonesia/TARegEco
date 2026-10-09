@@ -1099,8 +1099,8 @@ server <- function(input, output, session) {
       )
       
       # Deteksi lokasi template
-      report_template <- if (file.exists("dump/ta-regeco-projection.Rmd")) {
-        "dump/ta-regeco-projection.Rmd"
+      report_template <- if (file.exists("shiny/ta-regeco-projection.Rmd")) {
+        "shiny/ta-regeco-projection.Rmd"
       } else {
         "../../report_template/ta-regeco-projection.Rmd"
       }
