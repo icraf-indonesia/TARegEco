@@ -20,11 +20,49 @@ library(tibble)
 library(readxl)
 library(openxlsx)
 library(scales)
+library(TARegEco)
 
-# Load all functions from R/
-source_files <- list.files("R", pattern = "\\.R$", full.names = TRUE)
+# =========================================================
+# LOAD R FUNCTIONS DARI FOLDER R/
+# =========================================================
+find_r_dir <- function() {
+  candidates <- c(
+    "R",              # kalau working dir = TARegEco/
+    "../R",           # kalau working dir = TARegEco/shiny/
+    "../../R",        # kalau working dir = TARegEco/shiny/something/
+    file.path(dirname(getwd()), "R")
+  )
+  for (cand in candidates) {
+    if (dir.exists(cand) && length(list.files(cand, pattern = "\\.R$")) > 0) {
+      return(normalizePath(cand))
+    }
+  }
+  stop("Folder R/ tidak ditemukan dari working directory: ", getwd())
+}
+
+r_dir <- find_r_dir()
+cat("✓ Loading R functions from:", r_dir, "\n")
+
+source_files <- list.files(r_dir, pattern = "\\.R$", full.names = TRUE)
 invisible(lapply(source_files, source))
 
+# Cek fungsi kritis sudah ter-load
+required_fns <- c(
+  "load_projection_baseline",
+  "load_scenario_inputs",
+  "run_projection_scenario",
+  "create_area_matrix",
+  "read_input_file"
+)
+missing_fns <- required_fns[!vapply(required_fns, exists, logical(1))]
+if (length(missing_fns) > 0) {
+  stop("Fungsi belum ter-load: ", paste(missing_fns, collapse = ", "))
+}
+cat("✓ Semua fungsi kritis ter-load\n\n")
+
+# =========================================================
+# HELPER FUNCTIONS
+# =========================================================
 jscode <- "shinyjs.closeWindow = function() { window.close(); }"
 
 app_css <- "
@@ -38,6 +76,27 @@ app_css <- "
   .section-title { font-weight: 600; margin: 6px 0; }
   .note { font-size: 12px; color: #6c757d; }
   .period-preview { font-size: 12px; color: #6c757d; margin: -6px 0 10px 0; }
+  
+  /* Mencegah klik pada downloadButton saat disabled */
+  a.disabled, a[disabled] {
+    pointer-events: none !important;
+    opacity: 0.5 !important;
+    cursor: not-allowed !important;
+  }
+  
+  /* Custom CSS Notifikasi Toast */
+  .shiny-notification-message { 
+    background-color: #28a745 !important;
+    color: white !important;
+    border: 1px solid #1e7e34 !important;
+    font-weight: 600;
+  }
+  .shiny-notification-error {
+    background-color: #dc3545 !important;
+    color: white !important;
+    border: 1px solid #bd2130 !important;
+    font-weight: 600;
+  }
 "
 
 btn_style <- function(bg) {
@@ -47,9 +106,38 @@ btn_style <- function(bg) {
 xlsx_types <- c(".xlsx", ".xls")
 rds_types  <- c(".rds")
 
-# ---------------------------------------------------------
-# Indicator metadata untuk grafik & rekapitulasi
-# ---------------------------------------------------------
+# ---- Deteksi lokasi template Rmd ----
+find_report_template <- function(filename = "ta-regeco-projection.Rmd") {
+  candidates <- c(
+    filename,                                        # WD = shiny/
+    file.path("shiny", filename),                    # WD = TARegEco/
+    file.path("..", "shiny", filename),
+    file.path(dirname(getwd()), filename),
+    file.path(getwd(), filename)
+  )
+  for (cand in candidates) {
+    if (file.exists(cand)) {
+      return(normalizePath(cand))
+    }
+  }
+  for (search_root in c(".", "..", "../..")) {
+    hits <- list.files(
+      search_root,
+      pattern    = paste0("^", gsub("\\.", "\\\\.", filename), "$"),
+      recursive  = TRUE,
+      full.names = TRUE
+    )
+    if (length(hits) > 0) {
+      return(normalizePath(hits[1]))
+    }
+  }
+  stop(
+    "Template '", filename, "' tidak ditemukan.\n",
+    "  Working dir : ", getwd()
+  )
+}
+
+# ---- Indicator metadata ----
 indicator_meta <- list(
   PDRB_Total_Juta          = list(label = "PDRB Total (Rp Juta)",              col = "GDP"),
   Serapan_TK_Orang         = list(label = "Serapan Tenaga Kerja (Orang)",      col = "LABOUR"),
@@ -63,28 +151,74 @@ indicator_choices <- setNames(
   vapply(indicator_meta, function(m) m$label, character(1))
 )
 
-# ---------------------------------------------------------
-# Baca tabel GDP baseline
-# - Mode .rds : readRDS() lalu ambil komponen $gdp_baseline
-# - Mode excel: read_excel(sheet = "GDP")
-# ---------------------------------------------------------
+# ---- Helper baca baseline GDP (untuk template download) ----
 read_baseline_gdp <- function(use_rds, rds_file, xlsx_file) {
   if (use_rds) {
     if (is.null(rds_file)) return(NULL)
     obj <- tryCatch(readRDS(rds_file$datapath), error = function(e) NULL)
     if (is.null(obj)) return(NULL)
-    
-    # Format 1: obj langsung gdp_baseline
     if (is.data.frame(obj) && "SECTOR" %in% names(obj)) return(as.data.frame(obj))
-    
-    # Format 2: list dengan $gdp_baseline
-    if (is.list(obj) && !is.null(obj$gdp_baseline)) {
-      return(as.data.frame(obj$gdp_baseline))
-    }
+    if (is.list(obj) && !is.null(obj$gdp_baseline)) return(as.data.frame(obj$gdp_baseline))
     return(NULL)
   }
   if (is.null(xlsx_file)) return(NULL)
   as.data.frame(readxl::read_excel(xlsx_file$datapath, sheet = "GDP"))
+}
+
+# ---- Helper baca P_default (untuk template download) ----
+read_baseline_p_default <- function(use_rds, rds_file, xlsx_file) {
+  if (use_rds) {
+    if (is.null(rds_file)) return(NULL)
+    obj <- tryCatch(readRDS(rds_file$datapath), error = function(e) NULL)
+    if (is.null(obj)) return(NULL)
+    if (is.list(obj)) {
+      if (!is.null(obj$P_default)) return(as.matrix(obj$P_default))
+      if (!is.null(obj$land_proportion)) return(as.matrix(obj$land_proportion))
+      if (!is.null(obj$baseline$P_default)) return(as.matrix(obj$baseline$P_default))
+      if (!is.null(obj$baseline$land_proportion)) return(as.matrix(obj$baseline$land_proportion))
+    }
+    return(NULL)
+  }
+  if (is.null(xlsx_file)) return(NULL)
+  tryCatch({
+    as.data.frame(readxl::read_excel(xlsx_file$datapath, sheet = "Land_Proportion"))
+  }, error = function(e) NULL)
+}
+
+# ---- Helper baca nama LC (untuk template download) ----
+read_baseline_lc_names <- function(use_rds, rds_file, xlsx_file) {
+  if (use_rds) {
+    if (is.null(rds_file)) return(NULL)
+    obj <- tryCatch(readRDS(rds_file$datapath), error = function(e) NULL)
+    if (is.null(obj)) return(NULL)
+    
+    # Cari di berbagai lokasi
+    lt <- NULL
+    if (is.list(obj) && !is.null(obj$landuse_table)) {
+      lt <- obj$landuse_table
+    } else if (is.list(obj) && !is.null(obj$baseline$landuse_table)) {
+      lt <- obj$baseline$landuse_table
+    }
+    
+    if (is.null(lt)) return(NULL)
+    
+    # landuse_table bisa berupa data.frame atau list
+    if (is.data.frame(lt) && "LC" %in% names(lt)) {
+      return(as.character(lt$LC))
+    }
+    if (is.list(lt) && "LC" %in% names(lt)) {
+      return(as.character(lt$LC))
+    }
+    return(NULL)
+  }
+  
+  if (is.null(xlsx_file)) return(NULL)
+  
+  tryCatch({
+    lc_tbl <- readxl::read_excel(xlsx_file$datapath, sheet = "Land_Cover")
+    if (!"LC" %in% names(lc_tbl)) return(NULL)
+    as.character(lc_tbl$LC)
+  }, error = function(e) NULL)
 }
 
 # =========================================================
@@ -163,77 +297,92 @@ ui <- fluidPage(
       tags$hr(),
       div(class = "section-title", "3. Skenario Intervensi"),
       
-      textInput("scenario_name", "Nama Skenario Intervensi",
-                placeholder = "mis. Skenario Ekonomi Hijau"),
-      p(
-        "Satu skenario dapat menggabungkan Asumsi 1, 2, dan 3. Kosongkan file pada asumsi yang tidak dipakai.",
-        class = "note"
+      radioButtons(
+        "has_scenario",
+        "Apakah ada Skenario Intervensi?",
+        choices = c("Ya", "Tidak"),
+        selected = "Tidak",
+        inline = TRUE
       ),
       
-      downloadButton("download_template", "Unduh Template Skenario"),
-      p(
-        "Berisi nama sektor dan LPC baseline dari data deskriptif. Muat file baseline terlebih dulu.",
-        class = "note",
-        style = "margin-top: 6px;"
-      ),
-      
-      tabsetPanel(
-        id = "assumption_tabs",
-        type = "pills",
+      conditionalPanel(
+        condition = "input.has_scenario == 'Ya'",
         
-        tabPanel(
-          "A1: Lahan",
-          div(
-            class = "scenario-box",
-            tags$b("Asumsi 1: Perubahan Lahan"),
-            p("Simulasi dampak perubahan luas dan distribusi penggunaan lahan.",
-              class = "note"),
-            fileInput("a1_land_file", "Perubahan Lahan (.xlsx)",
-                      accept = xlsx_types, placeholder = "luc_projection.xlsx"),
-            div(class = "note", textOutput("a1_sheet_check")),
-            # Tombol reset A1
-            div(
-              style = "margin-top: 8px;",
-              actionButton("reset_a1", "Hapus Asumsi 1",
-                           icon = icon("trash"),
-                           style = "background-color: #dc3545; color: white; font-size: 12px; padding: 4px 10px;")
-            )
-          )
+        textInput("scenario_name", "Nama Skenario Intervensi",
+                  placeholder = "mis. Skenario Ekonomi Hijau"),
+        p(
+          "Satu skenario dapat menggabungkan Asumsi 1, 2, dan 3. Kosongkan file pada asumsi yang tidak dipakai.",
+          class = "note"
         ),
         
-        tabPanel(
-          "A2: Produktivitas",
-          div(
-            class = "scenario-box",
-            tags$b("Asumsi 2: Peningkatan Produktivitas"),
-            p("Simulasi peningkatan produktivitas lahan (LPC) menuju target.",
-              class = "note"),
-            fileInput("a2_lpc_file", "Target Produktivitas LPC (.xlsx)",
-                      accept = xlsx_types, placeholder = "produktivitas_lpc.xlsx"),
-            # Tombol reset A2
+        tabsetPanel(
+          id = "assumption_tabs",
+          type = "pills",
+          
+          tabPanel(
+            "A1: Lahan",
             div(
-              style = "margin-top: 8px;",
-              actionButton("reset_a2", "Hapus Asumsi 2",
-                           icon = icon("trash"),
-                           style = "background-color: #dc3545; color: white; font-size: 12px; padding: 4px 10px;")
+              class = "scenario-box",
+              tags$b("Asumsi 1: Perubahan Lahan"),
+              p("Simulasi dampak perubahan luas dan distribusi penggunaan lahan.", class = "note"),
+              
+              downloadButton("download_template_a1", "Unduh Template Asumsi 1 (Lahan)",
+                             style = "margin-bottom: 12px; font-size: 13px;"),
+              
+              fileInput("a1_land_file", "Perubahan Lahan (.xlsx)",
+                        accept = xlsx_types, placeholder = "luc_projection.xlsx"),
+              div(class = "note", textOutput("a1_sheet_check")),
+              
+              div(
+                style = "margin-top: 8px;",
+                actionButton("reset_a1", "Hapus Asumsi 1",
+                             icon = icon("trash"),
+                             style = "background-color: #dc3545; color: white; font-size: 12px; padding: 4px 10px;")
+              )
             )
-          )
-        ),
-        
-        tabPanel(
-          "A3: Hilirisasi",
-          div(
-            class = "scenario-box",
-            tags$b("Asumsi 3: Hilirisasi"),
-            p("Perubahan struktur I-O via RAS balancing.", class = "note"),
-            fileInput("a3_io_changes_file", "Perubahan Struktur I-O (.xlsx)",
-                      accept = xlsx_types, placeholder = "perubahan_io.xlsx"),
-            # Tombol reset A3
+          ),
+          
+          tabPanel(
+            "A2: Produktivitas",
             div(
-              style = "margin-top: 8px;",
-              actionButton("reset_a3", "Hapus Asumsi 3",
-                           icon = icon("trash"),
-                           style = "background-color: #dc3545; color: white; font-size: 12px; padding: 4px 10px;")
+              class = "scenario-box",
+              tags$b("Asumsi 2: Peningkatan Produktivitas"),
+              p("Simulasi peningkatan produktivitas lahan (LPC) menuju target.", class = "note"),
+              
+              downloadButton("download_template_a2", "Unduh Template Asumsi 2 (Produktivitas)",
+                             style = "margin-bottom: 12px; font-size: 13px;"),
+              
+              fileInput("a2_lpc_file", "Target Produktivitas LPC (.xlsx)",
+                        accept = xlsx_types, placeholder = "produktivitas_lpc.xlsx"),
+              
+              div(
+                style = "margin-top: 8px;",
+                actionButton("reset_a2", "Hapus Asumsi 2",
+                             icon = icon("trash"),
+                             style = "background-color: #dc3545; color: white; font-size: 12px; padding: 4px 10px;")
+              )
+            )
+          ),
+          
+          tabPanel(
+            "A3: Hilirisasi",
+            div(
+              class = "scenario-box",
+              tags$b("Asumsi 3: Hilirisasi"),
+              p("Perubahan struktur I-O via RAS balancing.", class = "note"),
+              
+              downloadButton("download_template_a3", "Unduh Template Asumsi 3 (Hilirisasi)",
+                             style = "margin-bottom: 12px; font-size: 13px;"),
+              
+              fileInput("a3_io_changes_file", "Perubahan Struktur I-O (.xlsx)",
+                        accept = xlsx_types, placeholder = "perubahan_io.xlsx"),
+              
+              div(
+                style = "margin-top: 8px;",
+                actionButton("reset_a3", "Hapus Asumsi 3",
+                             icon = icon("trash"),
+                             style = "background-color: #dc3545; color: white; font-size: 12px; padding: 4px 10px;")
+              )
             )
           )
         )
@@ -263,6 +412,9 @@ ui <- fluidPage(
     
     mainPanel(
       width = 7,
+      
+      uiOutput("status_alert"),
+      
       tabsetPanel(
         
         tabPanel("User Guide", uiOutput("user_guide")),
@@ -305,10 +457,17 @@ ui <- fluidPage(
 
 server <- function(input, output, session) {
   
+  # Kontrol tombol download template & reset berdasarkan ketersediaan data
   observe({
-    toggleState("reset_a1", condition = !is.null(a1_file()))
-    toggleState("reset_a2", condition = !is.null(a2_file()))
-    toggleState("reset_a3", condition = !is.null(a3_file()))
+    has_baseline <- !is.null(baseline_sectors())
+    
+    shinyjs::toggleState("download_template_a1", condition = has_baseline)
+    shinyjs::toggleState("download_template_a2", condition = has_baseline)
+    shinyjs::toggleState("download_template_a3", condition = has_baseline)
+    
+    shinyjs::toggleState("reset_a1", condition = !is.null(a1_file()))
+    shinyjs::toggleState("reset_a2", condition = !is.null(a2_file()))
+    shinyjs::toggleState("reset_a3", condition = !is.null(a3_file()))
   })
   
   # ==========================================================================
@@ -370,12 +529,12 @@ server <- function(input, output, session) {
   )
   
   # ---- Output directory ----
-  roots <- c(Home = path.expand("~"))
-  shinyDirChoose(input, "wd", roots = roots, session = session)
+  volumes <- c(Home = fs::path_home(), "R Installation" = R.home(), getVolumes()())
+  shinyDirChoose(input, "wd", roots = volumes, session = session)
   
   output_dir <- reactive({
     if (is.null(input$wd) || is.integer(input$wd)) return(NULL)
-    parseDirPath(roots, input$wd)
+    parseDirPath(volumes, input$wd)
   })
   
   dir_text <- reactive({
@@ -470,11 +629,6 @@ server <- function(input, output, session) {
     paste(lines, collapse = "\n")
   })
   
-  observe({
-    toggleState("download_template", condition = !is.null(baseline_sectors()))
-  })
-  
-  # ---- Cek sheet file Asumsi 1 ----
   a1_sheets <- reactive({
     f <- a1_file()
     if (is.null(f)) return(NULL)
@@ -490,204 +644,541 @@ server <- function(input, output, session) {
     )
   })
   
-  # ---- Template skenario ----
-  output$download_template <- downloadHandler(
+  # ==========================================================================
+  # TEMPLATE DOWNLOAD HANDLERS PER ASUMSI
+  # ==========================================================================
+  
+  # ---- 1. TEMPLATE ASUMSI 1 (Lahan) ----
+  output$download_template_a1 <- downloadHandler(
     filename = function() {
       nm <- gsub("[^A-Za-z0-9_-]+", "_", trimws(input$scenario_name))
-      if (!nzchar(nm)) "Template_Skenario.xlsx" else paste0("Template_", nm, ".xlsx")
+      if (!nzchar(nm)) "Template_Asumsi1_Lahan.xlsx" else paste0("Template_A1_", nm, ".xlsx")
     },
     content = function(file) {
-      sec <- baseline_sectors()
-      per <- tryCatch(periods(), error = function(e) character(0))
-      wb  <- openxlsx::createWorkbook()
+      init_yr <- ifelse(is.null(input$initial_year) || is.na(input$initial_year), 2025, input$initial_year)
+      end_yr  <- ifelse(is.null(input$end_year) || is.na(input$end_year), 2049, input$end_year)
+      step_yr <- ifelse(is.null(input$time_step) || is.na(input$time_step), 5, input$time_step)
       
-      if (is.null(sec)) {
-        openxlsx::addWorksheet(wb, "Petunjuk")
-        openxlsx::writeData(
-          wb, "Petunjuk",
-          data.frame(Catatan = "Data deskriptif belum dimuat. Muat file baseline, lalu unduh ulang template.")
-        )
-      } else {
-        tpl <- sec
-        tpl$Cycle_Type <- "Annual"
-        for (p in per) {
-          tpl[[paste("Increment_Rate", p)]]   <- NA_real_
-          tpl[[paste("Area_Implemented", p)]] <- NA_real_
-        }
-        openxlsx::addWorksheet(wb, "lpc")
-        openxlsx::writeData(wb, "lpc", tpl)
+      yrs <- seq(init_yr, end_yr, by = step_yr)
+      yr_cols <- as.character(yrs)
+      
+      sec_data <- baseline_sectors()
+      p_mat    <- tryCatch(
+        read_baseline_p_default(isTRUE(input$load_rds), input$descriptive_rds_file, input$io_output_file),
+        error = function(e) NULL
+      )
+      
+      wb <- openxlsx::createWorkbook()
+      
+      # --- Extract & Olah Matriks P_default ---
+      p_df <- NULL
+      if (!is.null(p_mat)) {
+        p_mat <- as.matrix(p_mat)
+        storage.mode(p_mat) <- "numeric"
         
-        openxlsx::addWorksheet(wb, "Petunjuk")
-        openxlsx::writeData(
-          wb, "Petunjuk",
-          data.frame(
-            Kolom = c("LPC_Baseline", "Cycle_Type", "Increment_Rate", "Area_Implemented"),
-            Keterangan = c(
-              "Output per hektar tahun dasar, dari analisis deskriptif. Jangan diubah.",
-              "Annual (default) atau Perennial untuk komoditas bersiklus panjang.",
-              "Peningkatan LPC pada periode tsb. Kosongkan jika sektor tidak diintervensi.",
-              "Porsi area yang menerapkan peningkatan pada periode tsb."
-            )
-          )
-        )
+        p_df <- as.data.frame(p_mat, stringsAsFactors = FALSE)
+        
+        # Buang kolom pertama jika:
+        # - nama kolomnya "...1", "...2", atau
+        # - isinya index sekuensial (1, 2, 3, ..., n) atau
+        # - nama kolomnya "Sektor"/"ID"/"Index"
+        first_col_name <- tolower(names(p_df)[1])
+        first_col_vals <- p_df[[1]]
+        
+        is_index_col <- 
+          grepl("^\\.\\.\\.", first_col_name) ||                    # "...1", "...2"
+          first_col_name %in% c("sektor", "sector", "s", "id", "index", "no") ||
+          (is.numeric(first_col_vals) && 
+             length(first_col_vals) > 1 &&
+             all(first_col_vals == seq_along(first_col_vals), na.rm = TRUE))  # 1,2,3,...,n
+        
+        if (is_index_col && ncol(p_df) > 1) {
+          p_df <- p_df[, -1, drop = FALSE]
+        }
       }
+      
+      # Tentukan nama & jumlah kolom LC
+      lc_names_source <- tryCatch(
+        read_baseline_lc_names(
+          isTRUE(input$load_rds),
+          input$descriptive_rds_file,
+          input$io_output_file
+        ),
+        error = function(e) NULL
+      )
+      
+      # Tentukan nama & jumlah kolom LC
+      if (!is.null(lc_names_source) && length(lc_names_source) > 0) {
+        # Prioritas: nama dari Land_Cover / landuse_table
+        lc_names <- lc_names_source
+        n_lc     <- length(lc_names)
+      } else if (!is.null(p_df) && ncol(p_df) > 0) {
+        # Fallback 1: nama kolom dari P_default
+        lc_names <- colnames(p_df)
+        n_lc     <- ncol(p_df)
+        if (is.null(lc_names) || any(lc_names == "")) {
+          lc_names <- paste0("LC", seq_len(n_lc))
+        }
+      } else {
+        # Fallback 2: generic
+        lc_names <- paste0("LC", 1:5)
+        n_lc     <- 5
+      }
+      
+      # Konsistensi: jika ncol(p_df) berbeda dari n_lc, sesuaikan
+      if (!is.null(p_df) && ncol(p_df) != n_lc) {
+        # Ambil minimum agar tidak error
+        n_min <- min(ncol(p_df), n_lc)
+        p_df    <- p_df[, 1:n_min, drop = FALSE]
+        lc_names <- lc_names[1:n_min]
+        n_lc     <- n_min
+        warning(sprintf(
+          "Jumlah kolom LC dari Land_Cover (%d) tidak sama dengan P_default (%d). Menggunakan %d kolom pertama.",
+          length(lc_names_source), ncol(p_df), n_min
+        ))
+      }
+      
+      # --- SHEET 1: luc_projection ---
+      df_luc <- data.frame(
+        ID = seq_len(n_lc),
+        LC = lc_names,
+        stringsAsFactors = FALSE
+      )
+      
+      for (y in yr_cols) {
+        df_luc[[y]] <- NA_real_
+      }
+      
+      openxlsx::addWorksheet(wb, "luc_projection")
+      openxlsx::writeData(wb, "luc_projection", df_luc)
+      
+      # --- SHEET 2: land_proportion ---
+      if (!is.null(sec_data) && "Sector" %in% names(sec_data)) {
+        sector_list <- sec_data$Sector
+      } else if (!is.null(p_df)) {
+        sector_list <- paste0("S", seq_len(nrow(p_df)))
+      } else {
+        sector_list <- paste0("S", 1:10)
+      }
+      
+      df_land <- data.frame(
+        Sektor = sector_list,
+        stringsAsFactors = FALSE
+      )
+      
+      # Masukkan nilai proporsi dari P_default ke kolom LC masing-masing
+      n_sec <- length(sector_list)
+      if (!is.null(p_df) && ncol(p_df) > 0) {
+        for (j in seq_len(n_lc)) {
+          col_nm   <- lc_names[j]
+          col_vals <- p_df[[j]]
+          
+          if (length(col_vals) >= n_sec) {
+            df_land[[col_nm]] <- col_vals[1:n_sec]
+          } else {
+            df_land[[col_nm]] <- c(col_vals, rep(0, n_sec - length(col_vals)))
+          }
+        }
+      } else {
+        for (col_nm in lc_names) {
+          df_land[[col_nm]] <- 0
+        }
+      }
+      
+      openxlsx::addWorksheet(wb, "land_proportion")
+      openxlsx::writeData(wb, "land_proportion", df_land)
       
       openxlsx::saveWorkbook(wb, file, overwrite = TRUE)
     }
   )
   
-  # ---- Ringkasan komponen skenario ----
-  output$scenario_summary <- renderTable({
-    file_name <- function(x) if (is.null(x)) "-" else x$name
-    assumption_status <- function(x) if (is.null(x)) "Tidak dipakai" else "Siap"
-    
-    a1_status <- if (is.null(a1_file())) {
-      "Tidak dipakai"
-    } else if (!("luc_projection" %in% a1_sheets())) {
-      "Sheet luc_projection tidak ditemukan"
-    } else {
-      "Siap"
+  # ---- 2. TEMPLATE ASUMSI 2 (Produktivitas LPC) ----
+  output$download_template_a2 <- downloadHandler(
+    filename = function() {
+      nm <- gsub("[^A-Za-z0-9_-]+", "_", trimws(input$scenario_name))
+      if (!nzchar(nm)) "Template_Asumsi2_Produktivitas.xlsx" else paste0("Template_A2_", nm, ".xlsx")
+    },
+    content = function(file) {
+      sec <- baseline_sectors()
+      wb  <- openxlsx::createWorkbook()
+      
+      # Style definitions
+      title_style     <- openxlsx::createStyle(textDecoration = "bold", fontColour = "#1F497D", fontSize = 12)
+      sub_style       <- openxlsx::createStyle(textDecoration = "italic", fontColour = "#595959", fontSize = 9)
+      param_hdr_style <- openxlsx::createStyle(textDecoration = "bold", fontColour = "#FFFFFF", fgFill = "#1F497D", fontSize = 10)
+      tbl_hdr_style   <- openxlsx::createStyle(textDecoration = "bold", fontColour = "#FFFFFF", fgFill = "#1F497D", halign = "center", valign = "center", wrapText = TRUE)
+      
+      bold_style      <- openxlsx::createStyle(textDecoration = "bold")
+      yellow_fill     <- openxlsx::createStyle(fgFill = "#FFF2CC", numFmt = "0.0%")
+      green_fill      <- openxlsx::createStyle(fgFill = "#E2EFDA", textDecoration = "bold", numFmt = "#,##0.00")
+      num_fmt         <- openxlsx::createStyle(numFmt = "#,##0.00")
+      center_style    <- openxlsx::createStyle(halign = "center")
+      
+      # =========================================================
+      # SHEET 1: Skenario_LPC
+      # =========================================================
+      openxlsx::addWorksheet(wb, "Skenario_LPC")
+      
+      # Title & Subtitles
+      openxlsx::writeData(wb, "Skenario_LPC", "TEMPLATE INPUT PRODUKTIVITAS LAHAN (LPC) - SKENARIO 2", startCol = 1, startRow = 1)
+      openxlsx::addStyle(wb, "Skenario_LPC", title_style, rows = 1, cols = 1)
+      
+      openxlsx::writeData(wb, "Skenario_LPC", "Model Mixed Input-Output Terkendala Lahan (Supply-Constrained Mixed IO Model)", startCol = 1, startRow = 2)
+      openxlsx::addStyle(wb, "Skenario_LPC", sub_style, rows = 2, cols = 1)
+      
+      openxlsx::writeData(wb, "Skenario_LPC", "Panduan: Isilah kolom 'Target Growth Factor' (%) atau langsung ketikkan nilai baru di kolom 'LPC Skenario 2'.", startCol = 1, startRow = 3)
+      openxlsx::addStyle(wb, "Skenario_LPC", sub_style, rows = 3, cols = 1)
+      
+      # Parameter Block (Baris 5 - 10)
+      openxlsx::writeData(wb, "Skenario_LPC", "PARAMETER MODEL", startCol = 1, startRow = 5)
+      openxlsx::addStyle(wb, "Skenario_LPC", param_hdr_style, rows = 5, cols = 1:2, gridExpand = TRUE)
+      
+      scen_nm <- if (input$has_scenario == "Ya" && nzchar(trimws(input$scenario_name))) {
+        trimws(input$scenario_name)
+      } else {
+        "Skenario 2: Intensifikasi & Inovasi Teknologi Pertanian"
+      }
+      
+      n_sec <- if (!is.null(sec)) nrow(sec) else 0
+      
+      param_df <- data.frame(
+        Param = c("Skenario", "Asumsi Lahan", "Asumsi Non-Lahan", "Satuan LPC", "Jumlah Sektor Valid"),
+        Val   = c(scen_nm, "Proyeksi Tutupan Lahan BAU (Business-As-Usual)", "Growth Rate Historis Baseline", "Juta Rupiah / Hektar (Rp Juta/Ha)", as.character(n_sec)),
+        stringsAsFactors = FALSE
+      )
+      openxlsx::writeData(wb, "Skenario_LPC", param_df, startCol = 1, startRow = 6, colNames = FALSE)
+      openxlsx::addStyle(wb, "Skenario_LPC", bold_style, rows = 6:10, cols = 1, gridExpand = TRUE)
+      
+      # Header Tabel Utama (Baris 12)
+      headers <- c("NO", "NAMA SEKTOR EKONOMI", "KATEGORI SEKTOR", "LPC BASELINE (Rp Juta/Ha)", "TARGET GROWTH (%)", "LPC SKENARIO 2 (Rp Juta/Ha)", "KETERANGAN / INTERVENSI KEBIJAKAN", "CROP TYPE")
+      openxlsx::writeData(wb, "Skenario_LPC", as.data.frame(t(headers)), startCol = 1, startRow = 12, colNames = FALSE)
+      openxlsx::addStyle(wb, "Skenario_LPC", tbl_hdr_style, rows = 12, cols = 1:8, gridExpand = TRUE)
+      openxlsx::setRowHeights(wb, "Skenario_LPC", rows = 12, heights = 28)
+      
+      # Populasikan Data Sektor
+      if (!is.null(sec) && nrow(sec) > 0) {
+        sector_names <- sec$Sector
+        n_sec_data   <- length(sector_names)
+        r_rows       <- 12 + seq_len(n_sec_data)
+        
+        # Buat Dataframe Lengkap (NO terisi 1:length(NAMA SEKTOR ECONOMIC))
+        df_rows <- data.frame(
+          NO = 1:length(sector_names),
+          `NAMA SEKTOR ECONOMIC` = sector_names,
+          `KATEGORI SEKTOR` = ifelse(!is.na(sec$LPC_Baseline) & sec$LPC_Baseline > 0, "Constrained (Lahan)", "Unconstrained (Non-Lahan)"),
+          `LPC BASELINE (Rp Juta/Ha)` = ifelse(is.na(sec$LPC_Baseline), 0, sec$LPC_Baseline),
+          `TARGET GROWTH (%)` = 0,
+          `LPC SKENARIO 2 (Rp Juta/Ha)` = NA_real_,
+          `KETERANGAN / INTERVENSI KEBIJAKAN` = "",
+          `CROP TYPE` = ifelse(!is.na(sec$LPC_Baseline) & sec$LPC_Baseline > 0, "Annual/Perennial", "None"),
+          check.names = FALSE,
+          stringsAsFactors = FALSE
+        )
+        
+        # Tulis Data
+        openxlsx::writeData(wb, "Skenario_LPC", df_rows, startCol = 1, startRow = 13, colNames = FALSE)
+        
+        # Tulis Rumus Vektorisasi untuk Kolom F: =D{row}*(1+E{row})
+        fmls <- sprintf("=D%d*(1+E%d)", r_rows, r_rows)
+        openxlsx::writeFormula(wb, "Skenario_LPC", x = fmls, startCol = 6, startRow = 13)
+        
+        # Terapkan Styling Kolom
+        openxlsx::addStyle(wb, "Skenario_LPC", center_style, rows = r_rows, cols = c(1, 8), gridExpand = TRUE)
+        openxlsx::addStyle(wb, "Skenario_LPC", num_fmt, rows = r_rows, cols = 4, gridExpand = TRUE)
+        openxlsx::addStyle(wb, "Skenario_LPC", yellow_fill, rows = r_rows, cols = 5, gridExpand = TRUE)
+        openxlsx::addStyle(wb, "Skenario_LPC", green_fill, rows = r_rows, cols = 6, gridExpand = TRUE)
+      }
+      
+      openxlsx::setColWidths(wb, "Skenario_LPC", cols = 1:8, widths = c(6, 42, 25, 25, 20, 25, 45, 15))
+      
+      # =========================================================
+      # SHEET 2: Petunjuk_Penggunaan
+      # =========================================================
+      openxlsx::addWorksheet(wb, "Petunjuk_Penggunaan")
+      
+      p_title_style <- openxlsx::createStyle(textDecoration = "bold", fontColour = "#1F497D", fontSize = 12)
+      p_h1_style    <- openxlsx::createStyle(textDecoration = "bold", fontSize = 10)
+      
+      openxlsx::writeData(wb, "Petunjuk_Penggunaan", "PANDUAN PENGGUNAAN TEMPLATE LPC SKENARIO 2", startCol = 1, startRow = 1)
+      openxlsx::addStyle(wb, "Petunjuk_Penggunaan", p_title_style, rows = 1, cols = 1)
+      
+      guide_texts <- list(
+        c(3, "1. Maksud & Tujuan Template", TRUE),
+        c(4, "Template ini dirancang untuk memfasilitasi penginputan data produktivitas lahan (LPC / Land Productivity Coefficient) pada Skenario 2 (Skenario Intensifikasi / Inovasi Teknologi Pertanian).", FALSE),
+        c(6, "2. Definisi Koefisien LPC", TRUE),
+        c(7, "LPC diukur dalam satuan Juta Rupiah per Hektar (Rp Juta/Ha). Nilai ini mencerminkan total Rupiah output ekonomi yang dihasilkan oleh 1 Hektar tutupan lahan sektoral.", FALSE),
+        c(9, "3. Cara Pengisian Data", TRUE),
+        c(10, "Terdapat 2 cara untuk mengedit skenario ini:", FALSE),
+        c(12, "a. Melalui Growth Factor (%)", TRUE),
+        c(13, "Ketikkan persentase kenaikan target produktivitas pada Kolom E (kuning). Nilai LPC Skenario 2 di Kolom F (hijau) akan otomatis terhitung.", FALSE),
+        c(15, "b. Penginputan Manual Direct LPC", TRUE),
+        c(16, "Anda juga dapat mengetikkan langsung angka nominal target LPC di Kolom F jika sudah memiliki angka pasti hasil studi teknis/dinas.", FALSE),
+        c(18, "4. Integrasi ke Kode R Skenario 2", TRUE),
+        c(19, "Simpan file ini sebagai 'produktivitas_lpc.xlsx'. Di R script Skenario 2, panggil kolom F (LPC Skenario 2) untuk memperbarui vektor p_0_co_s2.", FALSE),
+        c(21, "5. Penanganan Sektor Non-Lahan", TRUE),
+        c(22, "Sektor non-lahan (Unconstrained) memiliki nilai LPC = 0 karena tidak terkendala oleh kapasitas fisik lahan GIS.", FALSE)
+      )
+      
+      for (gt in guide_texts) {
+        r_num <- as.numeric(gt[[1]])
+        txt   <- gt[[2]]
+        is_b  <- as.logical(gt[[3]])
+        
+        openxlsx::writeData(wb, "Petunjuk_Penggunaan", txt, startCol = 1, startRow = r_num)
+        if (is_b) {
+          openxlsx::addStyle(wb, "Petunjuk_Penggunaan", p_h1_style, rows = r_num, cols = 1)
+        }
+      }
+      
+      openxlsx::setColWidths(wb, "Petunjuk_Penggunaan", cols = 1, widths = 130)
+      
+      openxlsx::saveWorkbook(wb, file, overwrite = TRUE)
     }
-    
-    data.frame(
-      Komponen = c(
-        "Skenario dasar (BAU)",
-        "Asumsi 1: Perubahan Lahan",
-        "Asumsi 2: Peningkatan Produktivitas",
-        "Asumsi 3: Hilirisasi"
-      ),
-      File = c(
-        file_name(input$projection_area_file),
-        file_name(a1_file()),
-        file_name(a2_file()),
-        file_name(a3_file())
-      ),
-      Status = c(
-        if (is.null(input$projection_area_file)) "Belum diisi (wajib)" else "Siap",
-        a1_status,
-        assumption_status(a2_file()),
-        assumption_status(a3_file())
-      ),
-      check.names = FALSE
-    )
-  })
+  )
+  
+  # ---- 3. TEMPLATE ASUMSI 3 (Hilirisasi / Restrukturisasi I-O) ----
+  output$download_template_a3 <- downloadHandler(
+    filename = function() {
+      nm <- gsub("[^A-Za-z0-9_-]+", "_", trimws(input$scenario_name))
+      if (!nzchar(nm)) "Template_Asumsi3_Hilirisasi.xlsx" else paste0("Template_A3_", nm, ".xlsx")
+    },
+    content = function(file) {
+      sec <- baseline_sectors()
+      wb  <- openxlsx::createWorkbook()
+      
+      # Style definitions
+      title_style     <- openxlsx::createStyle(textDecoration = "bold", fontColour = "#1F497D", fontSize = 12)
+      sub_style       <- openxlsx::createStyle(textDecoration = "italic", fontColour = "#595959", fontSize = 9)
+      guide_sub_style <- openxlsx::createStyle(fontColour = "#595959", fontSize = 9)
+      param_hdr_style <- openxlsx::createStyle(textDecoration = "bold", fontColour = "#FFFFFF", fgFill = "#1F497D", fontSize = 10)
+      tbl_hdr_style   <- openxlsx::createStyle(textDecoration = "bold", fontColour = "#FFFFFF", fgFill = "#1F497D", halign = "center", valign = "center", wrapText = TRUE)
+      col_desc_style  <- openxlsx::createStyle(fontSize = 8, fontColour = "#595959", wrapText = TRUE, valign = "top")
+      
+      bold_style      <- openxlsx::createStyle(textDecoration = "bold")
+      yellow_fill     <- openxlsx::createStyle(fgFill = "#FFF2CC")
+      yellow_num      <- openxlsx::createStyle(fgFill = "#FFF2CC", numFmt = "#,##0.00")
+      green_total     <- openxlsx::createStyle(fgFill = "#E2EFDA", textDecoration = "bold", numFmt = "#,##0.00")
+      center_style    <- openxlsx::createStyle(halign = "center")
+      
+      # =========================================================
+      # SHEET 1: Restrukturisasi
+      # =========================================================
+      openxlsx::addWorksheet(wb, "Restrukturisasi")
+      
+      # Title & Subtitles
+      openxlsx::writeData(wb, "Restrukturisasi", "TEMPLATE INPUT RESTRUKTURISASI STRUKTUR EKONOMI", startCol = 1, startRow = 1)
+      openxlsx::addStyle(wb, "Restrukturisasi", title_style, rows = 1, cols = 1)
+      
+      openxlsx::writeData(wb, "Restrukturisasi", "Model Input-Output Terkendala Lahan & Penyeimbangan Matriks RAS (Biproportional Matrix Balancing)", startCol = 1, startRow = 2)
+      openxlsx::addStyle(wb, "Restrukturisasi", sub_style, rows = 2, cols = 1)
+      
+      openxlsx::writeData(wb, "Restrukturisasi", "Panduan: Isilah kolom berwarnakan kuning (Input Manual) untuk mengalihkan nilai antar-sektor dan menetapkan target output baru.", startCol = 1, startRow = 3)
+      openxlsx::addStyle(wb, "Restrukturisasi", guide_sub_style, rows = 3, cols = 1)
+      
+      # Parameter Block (Baris 5 - 10)
+      openxlsx::writeData(wb, "Restrukturisasi", "PARAMETER DOKUMEN", startCol = 1, startRow = 5)
+      openxlsx::addStyle(wb, "Restrukturisasi", param_hdr_style, rows = 5, cols = 1:2, gridExpand = TRUE)
+      
+      scen_nm <- if (input$has_scenario == "Ya" && nzchar(trimws(input$scenario_name))) {
+        trimws(input$scenario_name)
+      } else {
+        "Restrukturisasi Industri & Hilirisasi Komoditas Lokal"
+      }
+      
+      param_df <- data.frame(
+        Param = c("Skenario", "Metode Balancing", "Asumsi Lahan", "Asumsi Non-Lahan", "Satuan Nilai"),
+        Val   = c(scen_nm, 
+                  "RAS / Biproportional Matrix Balancing (Miller & Blair, 2009)", 
+                  "Proyeksi Tutupan Lahan BAU (Business-As-Usual)", 
+                  "Growth Rate Historis Baseline + Penyesuaian Matriks Z & A", 
+                  "Juta Rupiah (Rp Juta)"),
+        stringsAsFactors = FALSE
+      )
+      openxlsx::writeData(wb, "Restrukturisasi", param_df, startCol = 1, startRow = 6, colNames = FALSE)
+      openxlsx::addStyle(wb, "Restrukturisasi", bold_style, rows = 6:10, cols = 1, gridExpand = TRUE)
+      
+      # Penjelasan Kolom / Variabel R (Baris 11)
+      desc_b <- "Dibaca untuk menentukan indeks baris (i) dan kolom (j) pada matriks transaksi antara (Z)"
+      desc_c <- "Dibaca untuk menentukan indeks baris (i) dan kolom (j) pada matriks transaksi antara (Z)"
+      desc_d <- "Dibaca sebagai `delta_z` untuk menambahkan nilai transaksi antara antar-sektor lokal\n\nΔZ bernilai positif (+)"
+      desc_e <- "Dibaca sebagai delta_x_from dan delta_x_to untuk memperbarui target output total wilayah (Xnew)\n\nΔX Asal bernilai negatif (- karena retensi/pengurangan ekspor mentah)"
+      desc_f <- "Dibaca sebagai delta_x_from dan delta_x_to untuk memperbarui target output total wilayah (Xnew)\n\nΔX Tujuan bernilai positif (+ karena penambahan produksi industri olahan)"
+      
+      openxlsx::writeData(wb, "Restrukturisasi", desc_b, startCol = 2, startRow = 11)
+      openxlsx::writeData(wb, "Restrukturisasi", desc_c, startCol = 3, startRow = 11)
+      openxlsx::writeData(wb, "Restrukturisasi", desc_d, startCol = 4, startRow = 11)
+      openxlsx::writeData(wb, "Restrukturisasi", desc_e, startCol = 5, startRow = 11)
+      openxlsx::writeData(wb, "Restrukturisasi", desc_f, startCol = 6, startRow = 11)
+      openxlsx::addStyle(wb, "Restrukturisasi", col_desc_style, rows = 11, cols = 2:6, gridExpand = TRUE)
+      openxlsx::setRowHeights(wb, "Restrukturisasi", rows = 11, heights = 45)
+      
+      # Header Tabel Utama (Baris 12)
+      headers <- c("NO", "SEKTOR ASAL (FROM SECTOR)", "SEKTOR TUJUAN (TO SECTOR)", 
+                   "PENAMBAHAN TRANSAKSI ANTARA / ΔZ (Rp Juta)", "PERUBAHAN OUTPUT ASAL ΔX (Rp Juta)", 
+                   "PERUBAHAN OUTPUT TUJUAN ΔX (Rp Juta)", "METODE BALANCING", "TAHUN TARGET", "DOKUMEN KEBIJAKAN / KETERANGAN")
+      openxlsx::writeData(wb, "Restrukturisasi", as.data.frame(t(headers)), startCol = 1, startRow = 12, colNames = FALSE)
+      openxlsx::addStyle(wb, "Restrukturisasi", tbl_hdr_style, rows = 12, cols = 1:9, gridExpand = TRUE)
+      openxlsx::setRowHeights(wb, "Restrukturisasi", rows = 12, heights = 32)
+      
+      # Slot Baris Intervensi (Baris 13 - 32)
+      n_rows    <- 20
+      row_start <- 13
+      row_end   <- 32
+      
+      df_rest <- data.frame(
+        NO = 1:n_rows,
+        `SEKTOR ASAL` = rep(NA_character_, n_rows),
+        `SEKTOR TUJUAN` = rep(NA_character_, n_rows),
+        `ΔZ` = rep(NA_real_, n_rows),
+        `ΔX ASAL` = rep(NA_real_, n_rows),
+        `ΔX TUJUAN` = rep(NA_real_, n_rows),
+        `METODE` = rep("RAS Balancing", n_rows),
+        `TAHUN` = rep(2030, n_rows),
+        `KETERANGAN` = rep(NA_character_, n_rows),
+        check.names = FALSE,
+        stringsAsFactors = FALSE
+      )
+      
+      openxlsx::writeData(wb, "Restrukturisasi", df_rest, startCol = 1, startRow = row_start, colNames = FALSE)
+      
+      # Formatting Baris Data 13-32
+      r_range <- row_start:row_end
+      openxlsx::addStyle(wb, "Restrukturisasi", center_style, rows = r_range, cols = 1, gridExpand = TRUE)
+      openxlsx::addStyle(wb, "Restrukturisasi", yellow_fill, rows = r_range, cols = c(2, 3, 7, 8, 9), gridExpand = TRUE)
+      openxlsx::addStyle(wb, "Restrukturisasi", yellow_num, rows = r_range, cols = 4:6, gridExpand = TRUE)
+      
+      # Baris Total (Baris 33)
+      total_row <- 33
+      openxlsx::writeData(wb, "Restrukturisasi", "TOTAL ALOKASI / PENYESUAIAN", startCol = 1, startRow = total_row)
+      openxlsx::addStyle(wb, "Restrukturisasi", bold_style, rows = total_row, cols = 1)
+      
+      openxlsx::writeFormula(wb, "Restrukturisasi", x = sprintf("=SUM(D%d:D%d)", row_start, row_end), startCol = 4, startRow = total_row)
+      openxlsx::writeFormula(wb, "Restrukturisasi", x = sprintf("=SUM(E%d:E%d)", row_start, row_end), startCol = 5, startRow = total_row)
+      openxlsx::writeFormula(wb, "Restrukturisasi", x = sprintf("=SUM(F%d:F%d)", row_start, row_end), startCol = 6, startRow = total_row)
+      openxlsx::addStyle(wb, "Restrukturisasi", green_total, rows = total_row, cols = 4:6, gridExpand = TRUE)
+      
+      openxlsx::setColWidths(wb, "Restrukturisasi", cols = 1:9, widths = c(6, 35, 35, 28, 25, 25, 18, 15, 45))
+      
+      # =========================================================
+      # SHEET 2: Daftar_Sektor
+      # =========================================================
+      openxlsx::addWorksheet(wb, "Daftar_Sektor")
+      
+      openxlsx::writeData(wb, "Daftar_Sektor", "DAFTAR SEKTOR EKONOMI MODEL INPUT-OUTPUT", startCol = 1, startRow = 1)
+      openxlsx::addStyle(wb, "Daftar_Sektor", title_style, rows = 1, cols = 1)
+      
+      openxlsx::writeData(wb, "Daftar_Sektor", "Gunakan nama sektor di bawah ini (copy-paste) agar presisi saat mengisi 'SEKTOR ASAL' dan 'SEKTOR TUJUAN'.", startCol = 1, startRow = 2)
+      openxlsx::addStyle(wb, "Daftar_Sektor", sub_style, rows = 2, cols = 1)
+      
+      sec_headers <- c("NO SEKTOR", "NAMA SEKTOR OFFICIAL", "KATEGORI SEKTOR")
+      openxlsx::writeData(wb, "Daftar_Sektor", as.data.frame(t(sec_headers)), startCol = 1, startRow = 4, colNames = FALSE)
+      openxlsx::addStyle(wb, "Daftar_Sektor", tbl_hdr_style, rows = 4, cols = 1:3, gridExpand = TRUE)
+      
+      if (!is.null(sec) && nrow(sec) > 0) {
+        n_sec_data <- nrow(sec)
+        df_sec <- data.frame(
+          `NO SEKTOR` = 1:n_sec_data,
+          `NAMA SEKTOR OFFICIAL` = sec$Sector,
+          `KATEGORI SEKTOR` = ifelse(!is.na(sec$LPC_Baseline) & sec$LPC_Baseline > 0, "Constrained (Lahan)", "Unconstrained (Non-Lahan)"),
+          check.names = FALSE,
+          stringsAsFactors = FALSE
+        )
+        openxlsx::writeData(wb, "Daftar_Sektor", df_sec, startCol = 1, startRow = 5, colNames = FALSE)
+        openxlsx::addStyle(wb, "Daftar_Sektor", center_style, rows = 5:(4 + n_sec_data), cols = 1, gridExpand = TRUE)
+      }
+      
+      openxlsx::setColWidths(wb, "Daftar_Sektor", cols = 1:3, widths = c(12, 45, 25))
+      
+      # =========================================================
+      # SHEET 3: Petunjuk_Penggunaan
+      # =========================================================
+      openxlsx::addWorksheet(wb, "Petunjuk_Penggunaan")
+      
+      openxlsx::writeData(wb, "Petunjuk_Penggunaan", "PETUNJUK PENGGUNAAN TEMPLATE", startCol = 1, startRow = 1)
+      openxlsx::addStyle(wb, "Petunjuk_Penggunaan", title_style, rows = 1, cols = 1)
+      
+      guide_list <- list(
+        c(3, "1. TUJUAN TEMPLATE", TRUE),
+        c(4, "Template ini digunakan untuk merancang simulasi Restrukturisasi Ekonomi & Hilirisasi Industri pada skenario ini. Nilai komoditas mentah yang dialihkan akan meningkatkan transaksi antara (intermediate consumption) sektor pengolahan lokal.", FALSE),
+        c(7, "2. CARA PENGISIAN", TRUE),
+        c(8, "Akses sheet 'Restrukturisasi', lalu isi kolom berwarna KUNING:\n - SEKTOR ASAL: Pilih komoditas mentah dari sheet 'Daftar_Sektor'.\n - SEKTOR TUJUAN: Pilih industri pengolahan/layanan lokal penerima masukan.\n - PENAMBAHAN TRANSAKSI ANTARA (ΔZ): Isikan nominal tambahan transaksi dalam Juta Rupiah.\n - PERUBAHAN OUTPUT ΔX: Isikan penyesuaian target total output sektor asal (-) dan tujuan (+).", FALSE),
+        c(11, "3. METODE RAS BALANCING", TRUE),
+        c(12, "Skrip R akan membaca file ini dan mengeksekusi Biproportional Matrix Balancing (RAS Algorithm):\n - Mengalihkan nilai Z_ij secara presisi.\n - Menyesuaikan vektor margin u (row sum) dan v (col sum).\n - Melakukan iterasi hingga konvergen (Max Error < 1e-6).\n - Menghitung ulang Matriks Koefisien Teknis (A_new), Invers Leontief (L_new), Multipliers, dan Linkages.", FALSE),
+        c(15, "4. CARA BACA DI SKRIP R", TRUE),
+        c(16, "Gunakan fungsi `process_sc_ras('restrukturisasi_s4_final.xlsx', Z_0, Y_0, VA_0, X_0, sektor_names)` pada R untuk membaca dan mengeksekusi simulasi Skenario Hilirisasi secara otomatis.", FALSE)
+      )
+      
+      p_h1_style <- openxlsx::createStyle(textDecoration = "bold", fontSize = 10)
+      
+      for (item in guide_list) {
+        r_num <- as.numeric(item[[1]])
+        txt   <- item[[2]]
+        is_b  <- as.logical(item[[3]])
+        
+        openxlsx::writeData(wb, "Petunjuk_Penggunaan", txt, startCol = 1, startRow = r_num)
+        if (is_b) {
+          openxlsx::addStyle(wb, "Petunjuk_Penggunaan", p_h1_style, rows = r_num, cols = 1)
+        }
+      }
+      
+      openxlsx::setColWidths(wb, "Petunjuk_Penggunaan", cols = 1, widths = 130)
+      
+      openxlsx::saveWorkbook(wb, file, overwrite = TRUE)
+    }
+  )
   
   # ==========================================================================
   # CORE: REACTIVE BASELINE & PROYEKSI
   # ==========================================================================
   
-  # ---- Reactive: baseline lengkap ----
+  # ---- Reactive: baseline ----
   baseline_data <- eventReactive(input$processTAReg2, {
     use_rds <- isTRUE(input$load_rds)
     
+    # --- Tentukan path sumber baseline ---
     if (use_rds) {
       req(input$descriptive_rds_file)
-      
-      raw <- readRDS(input$descriptive_rds_file$datapath)
-      
-      if (!is.list(raw)) {
-        stop("File .rds harus berisi list baseline dari modul deskriptif.")
-      }
-      # Kalau dibungkus $baseline
-      if (is.null(raw$gdp_baseline) && !is.null(raw$baseline)) {
-        raw <- raw$baseline
-      }
-      if (is.null(raw$gdp_baseline)) {
-        stop("Struktur .rds tidak dikenali (tidak ada $gdp_baseline).")
-      }
-      
-      baseline <- list()
-      
-      # ---- Direct fields ----
-      baseline$gdp_baseline             <- raw$gdp_baseline
-      baseline$intermediate_consumption <- raw$intermediate_consumption
-      baseline$full_io_table            <- raw$full_io_table
-      baseline$code_registry            <- raw$code_registry
-      baseline$growth_rate              <- raw$growth_rate
-      baseline$constrained              <- raw$constrained
-      baseline$unconstrained            <- raw$unconstrained
-      
-      # ---- P_default: fallback dari land_proportion ----
-      baseline$P_default <- if (!is.null(raw$P_default)) {
-        as.matrix(raw$P_default)
-      } else if (!is.null(raw$land_proportion)) {
-        as.matrix(raw$land_proportion)
-      } else {
-        stop("P_default / land_proportion tidak ditemukan di .rds.")
-      }
-      storage.mode(baseline$P_default) <- "numeric"
-      
-      # ---- Multipliers: nested $multipliers ----
-      if (!is.null(raw$multipliers)) {
-        baseline$income_multiplier <- raw$multipliers$income
-        baseline$labour_multiplier <- raw$multipliers$labour
-        baseline$SUB_multiplier    <- raw$multipliers$sub
-        baseline$output_multiplier <- raw$multipliers$output
-      } else {
-        baseline$income_multiplier <- raw$income_multiplier
-        baseline$labour_multiplier <- raw$labour_multiplier
-        baseline$SUB_multiplier    <- raw$SUB_multiplier
-        baseline$output_multiplier <- raw$output_multiplier
-      }
-      
-      # ---- Linkage: nested $linkage ----
-      if (!is.null(raw$linkage)) {
-        baseline$linkage_table   <- raw$linkage
-        baseline$leontief_matrix <- raw$linkage$Leontief
-      } else {
-        baseline$linkage_table   <- raw$linkage_table
-        baseline$leontief_matrix <- raw$leontief_matrix
-      }
-      
-      # ---- sector_idx ----
-      if (!is.null(raw$sector_idx)) {
-        baseline$sector_idx <- raw$sector_idx
-      } else if (!is.null(baseline$code_registry) && 
-                 "Type" %in% colnames(baseline$code_registry)) {
-        baseline$sector_idx <- which(baseline$code_registry$Type == "Sector")
-      } else {
-        baseline$sector_idx <- seq_len(nrow(baseline$gdp_baseline))
-      }
-      
-      # ---- VALIDASI ----
-      required <- c("gdp_baseline", "intermediate_consumption", "P_default",
-                    "income_multiplier", "labour_multiplier", "SUB_multiplier",
-                    "output_multiplier", "linkage_table", "leontief_matrix",
-                    "growth_rate", "code_registry")
-      
-      nulls <- required[vapply(required, function(nm) is.null(baseline[[nm]]), logical(1))]
-      if (length(nulls) > 0) {
-        stop("Field wajib NULL di .rds: ", paste(nulls, collapse = ", "))
-      }
-      
-      message(sprintf("✓ Baseline .rds: %d sektor × %d tutupan lahan, multipliers OK",
-                      nrow(baseline$P_default), ncol(baseline$P_default)))
-      
+      baseline_path <- input$descriptive_rds_file$datapath
     } else {
       req(input$io_output_file)
-      baseline <- load_projection_baseline(
-        path = input$io_output_file$datapath,
-        projection_area_file_bau = input$projection_area_file$datapath
-      )
+      baseline_path <- input$io_output_file$datapath
     }
     
-    # ---- Load area_matrix_bau dari Excel ----
+    # --- Baca area_matrix_bau dari file BAU ---
     req(input$projection_area_file)
-    sc_bau <- load_scenario_inputs(
-      list(
-        luc_projection    = input$projection_area_file$datapath,
-        land_distribution = NULL
-      ),
-      P_default = baseline$P_default
+    area_file <- input$projection_area_file$datapath
+    
+    # --- Panggil loader universal ---
+    message("[BASELINE] Loading from: ", baseline_path)
+    baseline <- load_projection_baseline(
+      path                     = baseline_path,
+      projection_area_file_bau = area_file
     )
     
-    if (is.null(sc_bau$area_matrix_scenario)) {
-      stop("Gagal membaca area_matrix dari file BAU: ", input$projection_area_file$name)
+    # --- Validasi field wajib ---
+    required <- c(
+      "gdp_baseline", "intermediate_consumption", "P_default",
+      "income_multiplier", "labour_multiplier", "SUB_multiplier",
+      "output_multiplier", "linkage_table", "leontief_matrix",
+      "growth_rate", "code_registry", "sector_idx",
+      "area_matrix_bau", "constrained", "unconstrained"
+    )
+    
+    nulls <- required[vapply(required, function(nm) is.null(baseline[[nm]]), logical(1))]
+    if (length(nulls) > 0) {
+      stop("Field wajib NULL di baseline: ", paste(nulls, collapse = ", "))
     }
+    
+    message(sprintf(
+      "✓ Baseline loaded: %d sektor × %d tutupan lahan, %d periode",
+      nrow(baseline$P_default),
+      ncol(baseline$P_default),
+      ncol(baseline$area_matrix_bau)
+    ))
     
     list(
       baseline        = baseline,
-      area_matrix_bau = sc_bau$area_matrix_scenario
+      area_matrix_bau = baseline$area_matrix_bau
     )
   }, ignoreNULL = FALSE)
   
@@ -942,69 +1433,86 @@ server <- function(input, output, session) {
     out
   })
   
-  # ---- Linkage (hanya jika Asumsi 3 aktif) ----
+  # ---- Linkage ITBL & ITFL (hanya jika Asumsi 3 aktif) ----
   output$linkage_section <- renderUI({
     res <- hasil_proyeksi()
     if (is.null(res) || !("A3" %in% res$active)) {
-      return(p("Linkage dan Output Multiplier muncul jika Asumsi 3: Hilirisasi diisi.",
+      return(p("Linkage (ITBL dan ITFL) muncul jika Asumsi 3: Hilirisasi diisi.",
                class = "note"))
     }
     tagList(
-      h5("Linkage dan Output Multiplier (Asumsi 3: Hilirisasi)"),
+      h5("Linkage (Asumsi 3: Hilirisasi)"),
+      radioButtons(
+        "linkage_type", NULL,
+        choices  = c("ITBL (Backward)" = "ITBL", "ITFL (Forward)" = "ITFL"),
+        selected = "ITBL",
+        inline   = TRUE
+      ),
       tableOutput("linkage_table"),
       plotOutput("linkage_chart", height = "350px")
     )
   })
   
   linkage_df <- reactive({
-    req(hasil_proyeksi())
     res <- hasil_proyeksi()
-    req("A3" %in% res$active)
-    
-    bl_before <- attr(hasil_bau()$scenario, "backward_linkage")
-    bl_after  <- attr(res$scenario,         "backward_linkage")
-    sec_names <- attr(res$scenario, "sector_names")
-    req(!is.null(sec_names), !is.null(bl_before), !is.null(bl_after))
+    req(res, "A3" %in% res$active)
+    lk <- attr(res$scenario, "linkage_compare")
+    req(!is.null(lk))
+    lk
+  })
+  
+  # Jenis indeks terpilih (default ITBL)
+  linkage_type_sel <- reactive({
+    if (is.null(input$linkage_type)) "ITBL" else input$linkage_type
+  })
+  
+  # Tabel: ITBL dan ITFL tampil bersamaan, diurutkan menurut |delta| indeks terpilih
+  output$linkage_table <- renderTable({
+    lk   <- linkage_df()
+    type <- linkage_type_sel()
+    lk   <- lk[order(-abs(lk[[paste0("DELTA_", type)]])), ]
+    lk   <- head(lk, 10)
     
     data.frame(
-      Sektor     = sec_names,
-      BL_Sebelum = as.numeric(bl_before),
-      BL_Sesudah = as.numeric(bl_after),
+      Sektor         = lk$SECTOR,
+      `ITBL Sebelum` = lk$ITBL_BEFORE,
+      `ITBL Sesudah` = lk$ITBL_AFTER,
+      `ΔITBL`        = sprintf("%+.4f", lk$DELTA_ITBL),
+      `ITFL Sebelum` = lk$ITFL_BEFORE,
+      `ITFL Sesudah` = lk$ITFL_AFTER,
+      `ΔITFL`        = sprintf("%+.4f", lk$DELTA_ITFL),
+      check.names = FALSE
+    )
+  }, digits = 4)
+  
+  # Grafik: ikut pilihan ITBL / ITFL
+  output$linkage_chart <- renderPlot({
+    lk   <- linkage_df()
+    type <- linkage_type_sel()
+    
+    d <- data.frame(
+      Sektor  = lk$SECTOR,
+      Sebelum = lk[[paste0(type, "_BEFORE")]],
+      Sesudah = lk[[paste0(type, "_AFTER")]],
       stringsAsFactors = FALSE
     )
-  })
-  
-  output$linkage_table <- renderTable({
-    df <- linkage_df()
-    df <- df[order(-abs(df$BL_Sesudah - df$BL_Sebelum)), ]
-    df <- head(df, 10)
-    df$Delta <- sprintf("%+.3f", df$BL_Sesudah - df$BL_Sebelum)
-    names(df) <- c("Sektor", "BL (Sebelum)", "BL (Sesudah)", "ΔBL")
-    df
-  })
-  
-  output$linkage_chart <- renderPlot({
-    df <- linkage_df()
-    df <- df[order(-abs(df$BL_Sesudah - df$BL_Sebelum)), ]
-    df <- head(df, 10)
+    d$Delta <- d$Sesudah - d$Sebelum
+    d <- head(d[order(-abs(d$Delta)), ], 10)
     
-    df_long <- tidyr::pivot_longer(
-      df, cols = c("BL_Sebelum", "BL_Sesudah"),
+    d_long <- tidyr::pivot_longer(
+      d, cols = c("Sebelum", "Sesudah"),
       names_to = "Status", values_to = "Indeks"
     )
-    df_long$Status <- factor(
-      ifelse(df_long$Status == "BL_Sebelum", "Sebelum", "Sesudah"),
-      levels = c("Sebelum", "Sesudah")
-    )
+    d_long$Status <- factor(d_long$Status, levels = c("Sebelum", "Sesudah"))
     
-    ggplot(df_long, aes(x = reorder(Sektor, Indeks), y = Indeks, fill = Status)) +
+    ggplot(d_long, aes(x = reorder(Sektor, Indeks), y = Indeks, fill = Status)) +
       geom_col(position = "dodge") +
       geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
       coord_flip() +
       scale_fill_manual(values = c(Sebelum = "#bdc3c7", Sesudah = "#27ae60")) +
       theme_minimal(base_size = 12) +
-      labs(title = "Perubahan Backward Linkage (Top 10)",
-           x = NULL, y = "Indeks Backward Linkage", fill = NULL)
+      labs(title = paste0("Perubahan ", type, " (Top 10)"),
+           x = NULL, y = paste("Indeks", type), fill = NULL)
   })
   
   # ==========================================================================
@@ -1014,6 +1522,10 @@ server <- function(input, output, session) {
   status_text <- reactiveVal("Belum ada proses dijalankan.")
   error_text  <- reactiveVal("")
   
+  status_type  <- reactiveVal("none")   # "none" | "message" | "warning" | "danger"
+  status_title <- reactiveVal("")       # kosong = pakai judul default per tipe
+  status_msg   <- reactiveVal("")
+
   observeEvent(input$processTAReg2, {
     problems <- character(0)
     
@@ -1048,14 +1560,34 @@ server <- function(input, output, session) {
     }
     
     if (length(problems) > 0) {
-      error_text(paste("-", problems, collapse = "\n"))
+      problem_text <- paste("-", problems, collapse = "\n")
+      
+      error_text(problem_text)
       status_text("Proses dihentikan. Lengkapi input berikut.")
+      
+      status_type("warning")
+      status_title("Proses dihentikan. Lengkapi input berikut.")
+      status_msg(problem_text)
+      
+      showNotification(
+        tagList(
+          tags$b("Proses dihentikan. Lengkapi input berikut."),
+          tags$ul(
+            style = "margin: 6px 0 0 0; padding-left: 18px;",
+            lapply(problems, tags$li)
+          )
+        ),
+        type     = "warning",
+        duration = 8
+      )
       return()
     }
     
     # --- Eksekusi proyeksi ---
     error_text("")
     status_text("Menjalankan proyeksi...")
+    status_type("none")
+    status_title("")
     
     withProgress(message = "Menjalankan analisis...", value = 0, {
       
@@ -1098,12 +1630,24 @@ server <- function(input, output, session) {
         ".html"
       )
       
-      # Deteksi lokasi template
-      report_template <- if (file.exists("shiny/ta-regeco-projection.Rmd")) {
-        "shiny/ta-regeco-projection.Rmd"
-      } else {
-        "../../report_template/ta-regeco-projection.Rmd"
+      report_template <- find_report_template("ta-regeco-projection.Rmd")
+      message("[REPORT] Template: ", report_template)
+      message("[REPORT] Exists  : ", file.exists(report_template))
+      
+      if (!file.exists(report_template)) {
+        stop("Template tidak ditemukan di: ", report_template)
       }
+      
+      file_baseline_path <- if (isTRUE(input$load_rds)) {
+        if (!is.null(input$descriptive_rds_file)) input$descriptive_rds_file$datapath else NULL
+      } else {
+        if (!is.null(input$io_output_file)) input$io_output_file$datapath else NULL
+      }
+      
+      file_bau_path <- if (!is.null(input$projection_area_file)) input$projection_area_file$datapath else NULL
+      file_a1_path  <- if (!is.null(a1_file())) a1_file()$datapath else NULL
+      file_a2_path  <- if (!is.null(a2_file())) a2_file()$datapath else NULL
+      file_a3_path  <- if (!is.null(a3_file())) a3_file()$datapath else NULL
       
       start_time <- Sys.time()
       
@@ -1129,9 +1673,13 @@ server <- function(input, output, session) {
             recap_scenario     = as.data.frame(agg_by_year(result$res$scenario, "GDP")),
             recap_bau          = as.data.frame(agg_by_year(hasil_bau()$scenario, "GDP")),
             indicator_labels   = indicator_labels,
-            linkage_before     = attr(hasil_bau()$scenario, "backward_linkage"),
-            linkage_after      = attr(result$res$scenario,  "backward_linkage"),
-            output_dir         = output_dir()
+            linkage_compare    = attr(result$res$scenario, "linkage_compare"),
+            output_dir         = output_dir(),
+            file_baseline      = file_baseline_path,
+            file_bau           = file_bau_path,
+            file_a1            = file_a1_path,
+            file_a2            = file_a2_path,
+            file_a3            = file_a3_path
           ),
           envir = new.env(parent = globalenv()),
           quiet = TRUE
@@ -1139,18 +1687,41 @@ server <- function(input, output, session) {
         
         incProgress(0.3, detail = "Report selesai")
         
+        # DELAY 1.5 detik untuk memperhalus progress bar sebelum notifikasi hijau muncul
+        Sys.sleep(1.5)
+        
+        # Notifikasi & Visual Alert HIJAU (BERHASIL)
+        successMsg <- paste0("Skenario: ", scen_label(), " | Asumsi: ", paste(active, collapse = " + "))
+        status_type("message")
+        status_msg(successMsg)
+        
         status_text(paste0(
-          "✓ Proyeksi selesai.\n",
-          "Skenario  : ", scen_label(), "\n",
-          "Asumsi    : ", paste(active, collapse = " + "), "\n",
-          "Periode   : ", paste(periods(), collapse = ", "), "\n",
-          "Sektor    : ", length(result$res$baseline_meta$sector_names), "\n",
-          "Report    : ", output_file
+          "Proyeksi selesai.\n",
+          "Skenario   : ", scen_label(), "\n",
+          "Asumsi     : ", paste(active, collapse = " + "), "\n",
+          "Periode    : ", paste(periods(), collapse = ", "), "\n",
+          "Sektor     : ", length(result$res$baseline_meta$sector_names), "\n",
+          "Report     : ", output_file
         ))
+        
+        showNotification(
+          "Analisis Berhasil Dijalankan!",
+          type = "message",
+          duration = 5
+        )
         
       }, error = function(e) {
         error_text(paste("Gagal render report:", conditionMessage(e)))
         status_text("Proyeksi selesai, tapi report gagal di-generate.")
+        
+        status_type("warning")
+        status_msg("Proyeksi selesai, namun file HTML report gagal di-generate.")
+        
+        showNotification(
+          "Analisis Selesai Sebagian: Report gagal di-generate.",
+          type = "warning",
+          duration = 5
+        )
       })
     })
     
@@ -1158,6 +1729,7 @@ server <- function(input, output, session) {
     show("open_report")
     show("open_output_folder")
   })
+  
   # ---- Download hasil proyeksi (.xlsx) ----
   output$download_results <- downloadHandler(
     filename = function() {
@@ -1183,6 +1755,12 @@ server <- function(input, output, session) {
       
       openxlsx::addWorksheet(wb, "Detail_BAU")
       openxlsx::writeData(wb, "Detail_BAU", hasil_bau()$scenario)
+      
+      lk <- attr(hasil_proyeksi()$scenario, "linkage_compare")
+      if (!is.null(lk)) {
+        openxlsx::addWorksheet(wb, "Linkage")
+        openxlsx::writeData(wb, "Linkage", lk)
+      }
       
       meta <- data.frame(
         Parameter = c("Nama Skenario", "Asumsi Aktif", "Tahun Awal", "Tahun Akhir",
@@ -1320,7 +1898,8 @@ server <- function(input, output, session) {
         tags$li("BAU + A1 + A3"),
         tags$li("BAU + A2"),
         tags$li("BAU + A2 + A3"),
-        tags$li("BAU + A3")
+        tags$li("BAU + A3"),
+        tags$li("BAU + A1 + A2 + A3"),
       )
     )
   })
