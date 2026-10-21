@@ -421,6 +421,83 @@ run_projection <- function(
   return(final_result)
 }
 
+#' Indeks keterkaitan total (Rasmussen) dari matriks invers Leontief
+#'
+#' ITBL_j = n * sum_i(L_ij) / sum(L)   (backward, per kolom)
+#' ITFL_i = n * sum_j(L_ij) / sum(L)   (forward,  per baris)
+#'
+#' Dipakai untuk kondisi "sebelum" (invers Leontief baseline) dan "sesudah"
+#' (L_new hasil RAS) supaya definisinya identik.
+#'
+#' @param L Matriks invers Leontief [n x n].
+#' @param sector_names Vektor nama sektor (opsional).
+#' @return List berisi `itbl` dan `itfl` (vektor numerik panjang n).
+#' @keywords internal
+#' @noRd
+compute_linkage_index <- function(L, sector_names = NULL) {
+  L     <- as.matrix(L)
+  n     <- nrow(L)
+  total <- sum(L)
+  
+  itbl <- as.numeric((n * colSums(L)) / total)
+  itfl <- as.numeric((n * rowSums(L)) / total)
+  
+  if (!is.null(sector_names)) {
+    names(itbl) <- sector_names
+    names(itfl) <- sector_names
+  }
+  
+  list(itbl = itbl, itfl = itfl)
+}
+
+#' Diagnostik io_changes terhadap baseline (hanya peringatan/pesan)
+#'
+#' Mengecek dua hal yang membuat Asumsi 3 gagal senyap:
+#' (1) nama sektor asal/tujuan tidak cocok dengan baseline, dan
+#' (2) sel [From, To] di Z baseline bernilai 0. RAS hanya menskalakan sel yang
+#' sudah ada, jadi hubungan baru tidak terbentuk lewat penambahan transaksi.
+#' Hanya berjalan jika kolom `SEKTOR ASAL (FROM SECTOR)` dan
+#' `SEKTOR TUJUAN (TO SECTOR)` ada.
+#'
+#' @keywords internal
+#' @noRd
+check_io_changes <- function(io_changes, sektor_names, Z) {
+  from_col <- "SEKTOR ASAL (FROM SECTOR)"
+  to_col   <- "SEKTOR TUJUAN (TO SECTOR)"
+  if (!all(c(from_col, to_col) %in% names(io_changes))) return(invisible(NULL))
+  
+  from_nm <- as.character(io_changes[[from_col]])
+  to_nm   <- as.character(io_changes[[to_col]])
+  keep    <- !is.na(from_nm) & !is.na(to_nm)
+  from_nm <- from_nm[keep]
+  to_nm   <- to_nm[keep]
+  
+  unknown <- unique(c(setdiff(from_nm, sektor_names), setdiff(to_nm, sektor_names)))
+  if (length(unknown) > 0) {
+    warning(
+      "Nama sektor pada io_changes tidak ditemukan di baseline (baris dilewati): ",
+      paste(unknown, collapse = ", "),
+      call. = FALSE
+    )
+  }
+  
+  i  <- match(from_nm, sektor_names)
+  j  <- match(to_nm,   sektor_names)
+  ok <- !is.na(i) & !is.na(j)
+  
+  if (any(ok)) {
+    n_zero <- sum(Z[cbind(i[ok], j[ok])] == 0, na.rm = TRUE)
+    if (n_zero > 0) {
+      message(sprintf(
+        "  ! %d dari %d pasangan From-To bernilai 0 di Z baseline. RAS tidak membentuk hubungan baru dari sel nol.",
+        n_zero, sum(ok)
+      ))
+    }
+  }
+  
+  invisible(NULL)
+}
+
 #' Run projection Scenario (Supply-Constrained Mixed Input-Output Model)
 #'
 #' Menerima kombinasi bebas dari skenario BAU, Asumsi 1, Asumsi 2, dan Asumsi 3.
@@ -456,9 +533,12 @@ run_projection <- function(
 #' @param io_changes Data frame atau NULL. ΔZ & ΔX skenario (Asumsi 3).
 #' @param growth_rate_scenario Numeric vector atau NULL. Override growth rate.
 #'
-#' @return Tibble hasil proyeksi per (tahun × sektor) dengan kolom:
+#' @return Tibble hasil proyeksi per (tahun x sektor) dengan kolom:
 #'   YEAR, SECTOR, LAND_REQUIREMENT, LPC, LPC_GROWTH_RATE, FD, OUTPUT,
-#'   GDP, INCOME, LABOUR, SURPLUS, ITBL, ITFL. Plus attribute diagnostik.
+#'   GDP, INCOME, LABOUR, SURPLUS, ITBL, ITFL (nilai kondisi akhir/aktif).
+#'   Attribute diagnostik, termasuk `linkage_compare`: data frame per sektor
+#'   berisi SECTOR, ITBL_BEFORE, ITBL_AFTER, DELTA_ITBL, ITFL_BEFORE,
+#'   ITFL_AFTER, DELTA_ITFL. Tanpa Asumsi 3, nilai BEFORE = AFTER.
 #'
 #' @export
 run_projection_scenario <- function(
@@ -597,17 +677,17 @@ run_projection_scenario <- function(
   m      <- length(idx_co)
   
   # ==========================================================================
-  # 3. FORMULASI MATRIKS LEONTIEF BASELINE
+  # 3. FORMULASI MATRIKS LEONTIEF BASELINE & LINKAGE "SEBELUM"
   # ==========================================================================
   A_full <- sweep(Z, 2, x_0, "/")
   M_full <- diag(n) - A_full
   B_full <- solve(M_full)
   
-  col_sum_B   <- colSums(B_full)
-  row_sum_B   <- rowSums(B_full)
-  total_sum_B <- sum(B_full)
-  ITBL_vector <- (n * col_sum_B) / total_sum_B
-  ITFL_vector <- (n * row_sum_B) / total_sum_B
+  # Linkage "sebelum": dari invers Leontief baseline (A = Z / x_0, basis yang
+  # sama dengan titik awal RAS, sehingga perbandingan sebelum-sesudah apple to apple)
+  link_before <- compute_linkage_index(B_full, sektor_names)
+  ITBL_vector <- link_before$itbl
+  ITFL_vector <- link_before$itfl
   
   # ==========================================================================
   # 4. ASUMSI 3: OVERRIDE SISTEM IO VIA RAS
@@ -616,6 +696,9 @@ run_projection_scenario <- function(
   
   if (use_a3) {
     message("[run_projection] Menjalankan RAS balancing (Asumsi 3)...")
+    
+    # Diagnostik: nama sektor tidak cocok / sel From-To bernilai 0
+    check_io_changes(io_changes, sektor_names, Z)
     
     sc_io_system <- process_sc_ras_system(
       df_input     = io_changes,
@@ -629,17 +712,38 @@ run_projection_scenario <- function(
     message(sprintf("  ✓ RAS iterasi=%d, max diff=%.3e",
                     sc_io_system$ras_iterations, sc_io_system$ras_diff))
     
+    # Invers Leontief baru (L_new) hasil RAS; fallback hitung dari A_new
+    L_new <- sc_io_system$L_new
+    if (is.null(L_new)) L_new <- solve(diag(n) - sc_io_system$A_new)
+    
+    # Linkage "sesudah": dihitung langsung dari L_new
+    link_after <- compute_linkage_index(L_new, sektor_names)
+    
     # Override parameter sistem IO
     A_full      <- sc_io_system$A_new
     M_full      <- diag(n) - A_full
-    B_full      <- sc_io_system$L_new
+    B_full      <- L_new
     v_c         <- sc_io_system$v_c_new
     w_c         <- sc_io_system$w_c_new
     l_c         <- sc_io_system$l_c_new
     Y_0         <- sc_io_system$Y_new
     x_0         <- sc_io_system$X_new
-    ITBL_vector <- sc_io_system$backward_linkage
-    ITFL_vector <- sc_io_system$forward_linkage
+    ITBL_vector <- link_after$itbl
+    ITFL_vector <- link_after$itfl
+    
+    # Diagnostik: apakah linkage benar-benar berubah?
+    d_itbl <- max(abs(link_after$itbl - link_before$itbl))
+    d_itfl <- max(abs(link_after$itfl - link_before$itfl))
+    message(sprintf("  ✓ max|dITBL|=%.4g, max|dITFL|=%.4g", d_itbl, d_itfl))
+    
+    if (max(d_itbl, d_itfl) < 1e-8) {
+      warning(
+        "Asumsi 3 aktif tetapi ITBL/ITFL tidak berubah. Periksa: ",
+        "(1) nama sektor di io_changes sama persis dengan sektor baseline, ",
+        "(2) kolom delta Z berisi nilai > 0.",
+        call. = FALSE
+      )
+    }
   }
   
   # ==========================================================================
@@ -796,8 +900,8 @@ run_projection_scenario <- function(
       INCOME           = Inc_sektoral[k, ],
       LABOUR           = Lab_sektoral[k, ],
       SURPLUS          = SUB_sektoral[k, ],
-      ITBL             = ITBL_vector,
-      ITFL             = ITFL_vector
+      ITBL             = as.numeric(ITBL_vector),
+      ITFL             = as.numeric(ITFL_vector)
     )
   }
   
@@ -807,7 +911,26 @@ run_projection_scenario <- function(
     )
   
   # ==========================================================================
-  # 9. METADATA (untuk Shiny / debugging)
+  # 9. PERBANDINGAN LINKAGE SEBELUM vs SESUDAH (ITBL & ITFL)
+  # ==========================================================================
+  linkage_compare <- data.frame(
+    SECTOR      = sektor_names,
+    ITBL_BEFORE = as.numeric(link_before$itbl),
+    ITBL_AFTER  = as.numeric(ITBL_vector),
+    ITFL_BEFORE = as.numeric(link_before$itfl),
+    ITFL_AFTER  = as.numeric(ITFL_vector),
+    stringsAsFactors = FALSE
+  )
+  linkage_compare$DELTA_ITBL <- linkage_compare$ITBL_AFTER - linkage_compare$ITBL_BEFORE
+  linkage_compare$DELTA_ITFL <- linkage_compare$ITFL_AFTER - linkage_compare$ITFL_BEFORE
+  linkage_compare <- linkage_compare[, c(
+    "SECTOR",
+    "ITBL_BEFORE", "ITBL_AFTER", "DELTA_ITBL",
+    "ITFL_BEFORE", "ITFL_AFTER", "DELTA_ITFL"
+  )]
+  
+  # ==========================================================================
+  # 10. METADATA (untuk Shiny / debugging)
   # ==========================================================================
   attr(final_result, "active_assumptions") <- active_assumptions
   attr(final_result, "use_a1") <- use_a1
@@ -815,8 +938,10 @@ run_projection_scenario <- function(
   attr(final_result, "use_a3") <- use_a3
   attr(final_result, "ras_iterations") <- if (!is.null(sc_io_system)) sc_io_system$ras_iterations else NA
   attr(final_result, "ras_diff")       <- if (!is.null(sc_io_system)) sc_io_system$ras_diff       else NA
-  attr(final_result, "backward_linkage") <- if (!is.null(sc_io_system)) sc_io_system$backward_linkage else ITBL_vector
-  attr(final_result, "forward_linkage")  <- if (!is.null(sc_io_system)) sc_io_system$forward_linkage  else ITFL_vector
+  attr(final_result, "linkage_compare")  <- linkage_compare
+  # Dipertahankan agar kode lama yang memakai attribute ini tetap jalan
+  attr(final_result, "backward_linkage") <- as.numeric(ITBL_vector)
+  attr(final_result, "forward_linkage")  <- as.numeric(ITFL_vector)
   attr(final_result, "sector_names")     <- sektor_names
   attr(final_result, "years")            <- years
   
