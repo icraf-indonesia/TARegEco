@@ -104,6 +104,7 @@ load_projection_baseline <- function(path, projection_area_file_bau) {
     leontief_matrix   <- io$linkage$Leontief
     full_io_table     <- io$full_io_table
     code_registry     <- io$code_registry
+    sector_idx        <- which(code_registry$Type == "Sector")
     income_multiplier <- io$multipliers$income
     labour_multiplier <- io$multipliers$labour
     SUB_multiplier    <- io$multipliers$sub
@@ -161,14 +162,47 @@ load_projection_baseline <- function(path, projection_area_file_bau) {
     output_multiplier <- read_input_file(path, sheet = "Multiplier_Output", header = TRUE)
     linkage_table     <- read_input_file(path, sheet = "Linkage",           header = TRUE)
 
-    # Land proportion (LC x Sektor) -> transpose ke Sektor x LC
+    # Land proportion — deteksi fleksibel berbagai format
     land_prop_raw <- read_input_file(path, sheet = "Land_Proportion", header = TRUE)
-    sector_cols <- grep("^S\\d+", colnames(land_prop_raw), value = TRUE)
-    if (length(sector_cols) == 0) {
-      stop("Land_Proportion sheet tidak memiliki kolom S1, S2, ...")
+    col_names     <- colnames(land_prop_raw)
+    
+    # ---- Deteksi format ----
+    # A. Format baru: kolom "V1", "V2", ... (LC codes) → orientasi Sektor × LC
+    # B. Format lama: kolom "S1", "S2", ... (Sector codes) → orientasi LC × Sektor (perlu transpose)
+    # C. Format label: ada kolom "Sektor"/"ID" + kolom numerik
+    
+    sector_cols <- grep("^S\\d+$", col_names, value = TRUE)   # S1, S2, ...
+    lc_cols     <- grep("^V\\d+$", col_names, value = TRUE)   # V1, V2, ...
+    
+    if (length(lc_cols) > 0) {
+      # ---- Format A: V1, V2, ... (26 LC) — orientasi sudah Sektor × LC ----
+      P_default <- as.matrix(land_prop_raw[, lc_cols, drop = FALSE])
+      storage.mode(P_default) <- "numeric"
+      
+    } else if (length(sector_cols) > 0) {
+      # ---- Format B: S1, S2, ... (66 sektor) — orientasi LC × Sektor, perlu transpose ----
+      P_default <- t(as.matrix(land_prop_raw[, sector_cols, drop = FALSE]))
+      storage.mode(P_default) <- "numeric"
+      
+    } else {
+      # ---- Format C: kolom pertama = label, sisanya LC ----
+      label_candidates <- c("Sektor", "SECTOR", "Sector", "sector",
+                            "ID", "id", "Kode", "KODE", "LC")
+      label_col <- intersect(label_candidates, col_names)
+      
+      numeric_cols <- setdiff(col_names, label_col)
+      if (length(numeric_cols) == 0) {
+        stop("Land_Proportion sheet tidak memiliki kolom tutupan lahan yang valid.")
+      }
+      
+      P_default <- suppressWarnings(
+        as.matrix(land_prop_raw[, numeric_cols, drop = FALSE])
+      )
+      P_default <- apply(P_default, 2, function(x) as.numeric(as.character(x)))
+      if (is.null(dim(P_default))) P_default <- matrix(P_default, ncol = 1)
+      P_default[is.na(P_default)] <- 0
+      storage.mode(P_default) <- "numeric"
     }
-    P_default <- t(as.matrix(land_prop_raw[, sector_cols]))
-    storage.mode(P_default) <- "numeric"
 
     # Intermediate consumption from Full IO Table
     sector_idx <- which(code_registry$Type == "Sector")
@@ -222,9 +256,9 @@ load_projection_baseline <- function(path, projection_area_file_bau) {
     labour_multiplier        = labour_multiplier,
     SUB_multiplier           = SUB_multiplier,
     output_multiplier        = output_multiplier,
-    linkage_table            = linkage_table,
-    land_prop                = land_prop,
-    P_default                = P_default,
+    linkage_table            = linkage_table, 
+    land_prop                = P_default, # proporsi lahan dari tahap IO, Data input statis
+    P_default                = P_default, # parameter awal untuk proyeksi, Parameter yang bisa di-override
     growth_rate              = growth_rate,
     area_matrix_bau          = area_matrix_bau,
     projection_area_bau      = projection_area_bau,

@@ -1854,54 +1854,35 @@ server <- function(input, output, session) {
   
   # ---- User guide ----
   output$user_guide <- renderUI({
-    guide_row <- function(a, b, c) tags$tr(tags$td(a), tags$td(b), tags$td(c))
-    
-    tagList(
-      br(),
-      h5("Alur penggunaan"),
-      tags$ol(
-        tags$li("Jalankan modul Analisis Deskriptif, lalu muat IO_Analysis_Output.xlsx atau file .rds-nya."),
-        tags$li("Isi proyeksi luas lahan BAU, tahun awal, tahun akhir, dan interval."),
-        tags$li("Isi Nama Skenario. Satu skenario dapat menggabungkan Asumsi 1, 2, dan 3. File pada tiap asumsi bersifat opsional."),
-        tags$li("Untuk Asumsi 2, unduh Template Skenario (berisi nama sektor dan LPC baseline), isi, lalu unggah pada tab A2."),
-        tags$li("Pilih folder output, lalu klik Run Analysis."),
-        tags$li("Lihat hasil pada tab Scenario Summary: grafik perbandingan dengan BAU, rekapitulasi per indikator. Linkage dan Output Multiplier tampil jika Asumsi 3 dijalankan."),
-        tags$li("Klik Download Results untuk mengekspor hasil ke file Excel.")
-      ),
-      h5("File asumsi"),
-      tags$table(
-        class = "table table-sm",
-        tags$thead(tags$tr(tags$th("Asumsi"), tags$th("File"), tags$th("Isi"))),
-        tags$tbody(
-          guide_row(
-            "1: Perubahan Lahan",
-            "luc_projection_[nama].xlsx",
-            "Sheet luc_projection (luas lahan per periode, wajib) dan land_proportion (distribusi lahan, opsional)."
-          ),
-          guide_row(
-            "2: Peningkatan Produktivitas",
-            "produktivitas_lpc.xlsx",
-            "Dari template: sektor, LPC baseline, Cycle_Type, serta Increment_Rate dan Area_Implemented per periode."
-          ),
-          guide_row(
-            "3: Hilirisasi",
-            "perubahan_io.xlsx",
-            "Perubahan nilai pada tabel I-O (konsumsi antara atau komponen final demand)."
-          )
-        )
-      ),
-      h5("Kombinasi skenario yang didukung"),
-      tags$ul(
-        tags$li("BAU saja"),
-        tags$li("BAU + A1"),
-        tags$li("BAU + A1 + A2"),
-        tags$li("BAU + A1 + A3"),
-        tags$li("BAU + A2"),
-        tags$li("BAU + A2 + A3"),
-        tags$li("BAU + A3"),
-        tags$li("BAU + A1 + A2 + A3"),
-      )
+    guide_paths <- c(
+      "helpfile/quick_user_guide.Rmd",
+      "../helpfile/quick_user_guide.Rmd",
+      file.path(getwd(), "helpfile", "quick_user_guide.Rmd"),
+      file.path(dirname(getwd()), "helpfile", "quick_user_guide.Rmd")
     )
+    
+    for (path in guide_paths) {
+      if (file.exists(path)) {
+        html_content <- tryCatch(
+          rmarkdown::render(
+            path,
+            output_format = "html_fragment",
+            quiet         = TRUE,
+            envir         = new.env(parent = globalenv())
+          ),
+          error = function(e) {
+            warning("[user_guide] Gagal render: ", conditionMessage(e))
+            NULL
+          }
+        )
+        
+        if (!is.null(html_content) && file.exists(html_content)) {
+          return(HTML(paste(readLines(html_content), collapse = "\n")))
+        }
+      }
+    }
+    
+    HTML("<p style='color:#6c757d;'>User guide file not found. Expected at: <code>helpfile/quick_user_guide.Rmd</code></p>")
   })
 }
 
