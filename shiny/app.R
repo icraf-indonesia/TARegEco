@@ -139,11 +139,14 @@ find_report_template <- function(filename = "ta-regeco-projection.Rmd") {
 
 # ---- Indicator metadata ----
 indicator_meta <- list(
-  PDRB_Total_Juta          = list(label = "PDRB Total (Rp Juta)",              col = "GDP"),
-  Serapan_TK_Orang         = list(label = "Serapan Tenaga Kerja (Orang)",      col = "LABOUR"),
-  Pendapatan_TK_Juta       = list(label = "Pendapatan Tenaga Kerja (Rp Juta)", col = "INCOME"),
-  Surplus_Usaha_Bruto_Juta = list(label = "Surplus Usaha Bruto (Rp Juta)",     col = "SURPLUS"),
-  Output_Total_Juta        = list(label = "Output Total (Rp Juta)",            col = "OUTPUT")
+  PDRB_Total_Juta          = list(label = "PDRB Total (Rp Juta)",                       col = "GDP"),
+  Serapan_TK_Orang         = list(label = "Serapan Tenaga Kerja (Orang)",               col = "LABOUR"),
+  Pendapatan_TK_Juta       = list(label = "Pendapatan Tenaga Kerja (Rp Juta)",          col = "INCOME"),
+  Surplus_Usaha_Bruto_Juta = list(label = "Surplus Usaha Bruto (Rp Juta)",              col = "SURPLUS"),
+  Output_Total_Juta        = list(label = "Output Total (Rp Juta)",                     col = "OUTPUT"),
+  # ---- per-kapita ----
+  PDRB_per_Kapita_Juta     = list(label = "PDRB per Kapita (Rp Juta/Orang)",            col = "GDP_PER_CAPITA"),
+  Pendapatan_per_Kapita_Juta = list(label = "Pendapatan TK per Kapita (Rp Juta/Orang)", col = "INCOME_PER_CAPITA")
 )
 
 indicator_choices <- setNames(
@@ -162,7 +165,22 @@ read_baseline_gdp <- function(use_rds, rds_file, xlsx_file) {
     return(NULL)
   }
   if (is.null(xlsx_file)) return(NULL)
-  as.data.frame(readxl::read_excel(xlsx_file$datapath, sheet = "GDP"))
+  
+  # Deteksi nama sheet GDP secara fleksibel
+  sheets <- tryCatch(readxl::excel_sheets(xlsx_file$datapath),
+                     error = function(e) character(0))
+  
+  gdp_sheet_candidates <- c("GDP", "Analisis Deskriptif", "Analisis_Deskriptif",
+                            "Gdp", "gdp")
+  gdp_sheet <- intersect(gdp_sheet_candidates, sheets)[1]
+  
+  if (is.na(gdp_sheet) || length(gdp_sheet) == 0) {
+    warning("[read_baseline_gdp] Sheet 'GDP' tidak ditemukan. ",
+            "Sheet tersedia: ", paste(sheets, collapse = ", "))
+    return(NULL)
+  }
+  
+  as.data.frame(readxl::read_excel(xlsx_file$datapath, sheet = gdp_sheet))
 }
 
 # ---- Helper baca P_default (untuk template download) ----
@@ -277,18 +295,24 @@ ui <- fluidPage(
         accept = xlsx_types,
         placeholder = "Pilih luc_projection.xlsx"
       ),
+      
+      fileInput(
+        "population_file",
+        "Proyeksi Jumlah Penduduk (.xlsx/.csv) (opsional)",
+        accept = c(".xlsx", ".xls", ".csv"),
+        placeholder = "Pilih file dengan kolom: Tahun, Populasi"
+      ),
+      div(class = "note", textOutput("pop_file_check")),
       tags$hr(),
       
       # ---------------------------------------------------
       # 2. PERIODE PROYEKSI
       # ---------------------------------------------------
       div(class = "section-title", "2. Periode proyeksi"),
+      p("Tahun awal, tahun akhir, dan interval dideteksi otomatis dari kolom tahun di file Proyeksi Lahan BAU.",
+        class = "note"),
       
-      fluidRow(
-        column(4, numericInput("initial_year", "Tahun awal", value = 2025, min = 1990, step = 1)),
-        column(4, numericInput("end_year", "Tahun akhir", value = 2049, min = 1991, step = 1)),
-        column(4, numericInput("time_step", "Interval (tahun)", value = 5, min = 1, step = 1))
-      ),
+      div(class = "period-preview", textOutput("detected_years")),
       div(class = "period-preview", textOutput("period_preview")),
       
       # ---------------------------------------------------
@@ -522,10 +546,19 @@ server <- function(input, output, session) {
     showNotification("Asumsi 3: Hilirisasi dihapus.", type = "warning", duration = 3)
   })
   
-  baseline_sheets <- c(
-    "GDP", "Leontief_Matrix", "Growth_Rate", "Multiplier_Output",
-    "Multiplier_Income", "Multiplier_Labour", "Multiplier_SUB",
-    "Land_Proportion", "Linkage", "Full_IO_Table", "Code_Registry"
+  # Nama sheet yang diharapkan, dengan kemungkinan alias
+  baseline_sheets <- list(
+    GDP              = c("GDP", "Analisis Deskriptif", "Analisis_Deskriptif"),
+    Leontief_Matrix  = c("Leontief_Matrix"),
+    Growth_Rate      = c("Growth_Rate"),
+    Multiplier_Output = c("Multiplier_Output"),
+    Multiplier_Income = c("Multiplier_Income"),
+    Multiplier_Labour = c("Multiplier_Labour"),
+    Multiplier_SUB    = c("Multiplier_SUB"),
+    Land_Proportion   = c("Land_Proportion"),
+    Linkage           = c("Linkage"),
+    Full_IO_Table     = c("Full_IO_Table"),
+    Code_Registry     = c("Code_Registry")
   )
   
   # ---- Output directory ----
@@ -545,17 +578,91 @@ server <- function(input, output, session) {
   output$selected_directory <- renderText(dir_text())
   output$selected_dir       <- renderText(paste("Output directory:", dir_text()))
   
+  # ---- Reactive: baca tahun awal & akhir dari file BAU ----
+  tahun_dari_bau <- reactive({
+    f <- input$projection_area_file
+    if (is.null(f)) {
+      return(list(initial_year = NA_integer_, end_year = NA_integer_,
+                  time_step = NA_integer_, tahun = integer(0), ok = FALSE))
+    }
+    
+    tryCatch({
+      sheets <- readxl::excel_sheets(f$datapath)
+      target_sheet <- if ("luc_projection" %in% sheets) "luc_projection" else sheets[1]
+      
+      df <- readxl::read_excel(f$datapath, sheet = target_sheet, n_max = 1)
+      col_names <- names(df)
+      
+      tahun <- suppressWarnings(as.numeric(col_names))
+      tahun <- tahun[!is.na(tahun) & tahun >= 1900 & tahun <= 2200]
+      tahun <- sort(unique(tahun))
+      
+      if (length(tahun) < 1) {
+        return(list(initial_year = NA_integer_, end_year = NA_integer_,
+                    time_step = NA_integer_, tahun = integer(0), ok = FALSE))
+      }
+      
+      # Hitung time_step dari selisih tahun
+      time_step <- if (length(tahun) >= 2) {
+        diffs <- diff(tahun)
+        diffs <- diffs[diffs > 0]           # buang 0/negatif
+        if (length(diffs) > 0) as.integer(min(diffs)) else NA_integer_
+      } else {
+        NA_integer_
+      }
+      
+      list(
+        initial_year = as.integer(min(tahun)),
+        end_year     = as.integer(max(tahun)),
+        time_step    = time_step,
+        tahun        = tahun,
+        ok           = TRUE
+      )
+    }, error = function(e) {
+      warning("[tahun_dari_bau] ", conditionMessage(e))
+      list(initial_year = NA_integer_, end_year = NA_integer_,
+           time_step = NA_integer_, tahun = integer(0), ok = FALSE)
+    })
+  })
+  
+  # ---- Tampilkan tahun terdeteksi ----
+  output$detected_years <- renderText({
+    t <- tahun_dari_bau()
+    if (!t$ok) return("(belum terbaca)")
+    if (is.na(t$time_step)) {
+      sprintf("Tahun: %d – %d (1 titik)", t$initial_year, t$end_year)
+    } else {
+      sprintf(
+        "Tahun: %d – %d (interval %d tahun, %d titik)",
+        t$initial_year, t$end_year, t$time_step, length(t$tahun)
+      )
+    }
+  })
+  
+  # ---- Nilai initial_year & end_year sebagai reactive ----
+  initial_year_val <- reactive({ tahun_dari_bau()$initial_year })
+  end_year_val     <- reactive({ tahun_dari_bau()$end_year })
+  time_step_val    <- reactive({ tahun_dari_bau()$time_step })
+  
   # ---- Label periode ----
   periods <- reactive({
+    iy    <- initial_year_val()
+    ey    <- end_year_val()
+    step  <- time_step_val()
+    
     validate(
-      need(input$time_step >= 1, "Interval minimal 1 tahun."),
-      need(
-        input$end_year - input$time_step >= input$initial_year,
-        "Tahun akhir harus minimal satu interval setelah tahun awal."
-      )
+      need(!is.na(iy) && !is.na(ey),
+           "Tahun awal/akhir belum terbaca dari file Proyeksi Lahan BAU. ",
+           "Pastikan file memiliki kolom tahun (mis. '2024', '2030', ...)."),
+      need(!is.na(step) && step >= 1,
+           "Interval tahun tidak dapat dihitung dari file BAU. ",
+           "Pastikan ada minimal 2 kolom tahun berbeda."),
+      need(ey - step >= iy,
+           "Rentang tahun tidak cukup untuk interval yang terdeteksi.")
     )
-    start <- seq(input$initial_year, input$end_year - input$time_step, by = input$time_step)
-    paste0(start, "-", start + input$time_step)
+    
+    start <- seq(iy, ey - step, by = step)
+    paste0(start, "-", start + step)
   })
   
   output$period_preview <- renderText({
@@ -602,6 +709,39 @@ server <- function(input, output, session) {
     )
   })
   
+    # ---- Reactive: populasi proyeksi ----
+  pop_projection <- reactive({
+    f <- input$population_file
+    if (is.null(f)) return(NULL)
+    
+    tryCatch({
+      df <- load_population_projection(f$datapath)
+      if (is.null(df) || nrow(df) == 0) return(NULL)
+      df
+    }, error = function(e) {
+      warning("[pop_projection] ", conditionMessage(e))
+      NULL
+    })
+  })
+  
+  # ---- Check: info status file populasi ----
+  output$pop_file_check <- renderText({
+    f <- input$population_file
+    if (is.null(f)) return("")
+    
+    df <- pop_projection()
+    if (is.null(df)) {
+      return("⚠ File populasi tidak valid: pastikan punya kolom 'Tahun' dan 'Populasi'.")
+    }
+    
+    sprintf(
+      "✓ Populasi: %d baris (%d–%d), %.0f → %.0f jiwa",
+      nrow(df),
+      min(df$Tahun), max(df$Tahun),
+      df$Populasi[1], df$Populasi[nrow(df)]
+    )
+  })
+  
   output$metadata_preview <- renderText({
     use_rds <- isTRUE(input$load_rds)
     f <- if (use_rds) input$descriptive_rds_file else input$io_output_file
@@ -611,8 +751,16 @@ server <- function(input, output, session) {
     lines <- paste0("File   : ", f$name)
     
     if (!use_rds) {
-      sheets  <- tryCatch(readxl::excel_sheets(f$datapath), error = function(e) character(0))
-      missing <- setdiff(baseline_sheets, sheets)
+      sheets <- tryCatch(readxl::excel_sheets(f$datapath),
+                         error = function(e) character(0))
+      
+      # Cek tiap sheet wajib: jika salah satu alias ada, dianggap ada
+      missing <- character(0)
+      for (canonical in names(baseline_sheets)) {
+        aliases <- baseline_sheets[[canonical]]
+        if (!any(aliases %in% sheets)) missing <- c(missing, canonical)
+      }
+      
       lines <- c(
         lines,
         paste0("Sheet  : ",
@@ -655,9 +803,9 @@ server <- function(input, output, session) {
       if (!nzchar(nm)) "Template_Asumsi1_Lahan.xlsx" else paste0("Template_A1_", nm, ".xlsx")
     },
     content = function(file) {
-      init_yr <- ifelse(is.null(input$initial_year) || is.na(input$initial_year), 2025, input$initial_year)
-      end_yr  <- ifelse(is.null(input$end_year) || is.na(input$end_year), 2049, input$end_year)
-      step_yr <- ifelse(is.null(input$time_step) || is.na(input$time_step), 5, input$time_step)
+      init_yr <- ifelse(is.na(initial_year_val()), 2025, initial_year_val())
+      end_yr  <- ifelse(is.na(end_year_val()),     2049, end_year_val())
+      step_yr <- ifelse(is.na(time_step_val()), 5, time_step_val())
       
       yrs <- seq(init_yr, end_yr, by = step_yr)
       yr_cols <- as.character(yrs)
@@ -1178,7 +1326,8 @@ server <- function(input, output, session) {
     
     list(
       baseline        = baseline,
-      area_matrix_bau = baseline$area_matrix_bau
+      area_matrix_bau = baseline$area_matrix_bau,
+      profile         = baseline$profile
     )
   }, ignoreNULL = FALSE)
   
@@ -1213,7 +1362,7 @@ server <- function(input, output, session) {
         P_default = baseline$P_default
       )
       args_a2$lpc_scenario    <- sc_a2$lpc_scenario
-      args_a2$lpc_target_year <- input$end_year
+      args_a2$lpc_target_year <- end_year_val()
     }
     
     # --- Args Asumsi 3 ---
@@ -1226,7 +1375,7 @@ server <- function(input, output, session) {
       args_a3$io_changes <- sc_a3$io_changes
     }
     
-    options(initial_year = input$initial_year)
+    options(initial_year = initial_year_val())
     
     # --- Panggil run_projection dengan tryCatch ---
     hasil <- tryCatch(
@@ -1247,7 +1396,8 @@ server <- function(input, output, session) {
             area_matrix_bau   = area_matrix_bau,
             growth_rate       = baseline$growth_rate,
             constrained       = baseline$constrained,
-            unconstrained     = baseline$unconstrained
+            unconstrained     = baseline$unconstrained,
+            pop_projection    = pop_projection()
           ),
           args_a1,
           args_a2,
@@ -1293,7 +1443,7 @@ server <- function(input, output, session) {
     baseline        <- bl$baseline
     area_matrix_bau <- bl$area_matrix_bau
     
-    options(initial_year = input$initial_year)
+    options(initial_year = initial_year_val())
     
     hasil <- tryCatch(
       run_projection_scenario(
@@ -1310,7 +1460,8 @@ server <- function(input, output, session) {
         area_matrix_bau   = area_matrix_bau,
         growth_rate       = baseline$growth_rate,
         constrained       = baseline$constrained,
-        unconstrained     = baseline$unconstrained
+        unconstrained     = baseline$unconstrained,
+        pop_projection    = pop_projection()
       ),
       error = function(e) {
         warning("[hasil_bau] Error: ", conditionMessage(e))
@@ -1349,12 +1500,25 @@ server <- function(input, output, session) {
     if (nrow(df) == 0) return(NULL)
     if (!indicator_col %in% names(df)) return(NULL)
     
-    df |>
-      dplyr::group_by(YEAR) |>
-      dplyr::summarise(
-        Total = sum(.data[[indicator_col]], na.rm = TRUE),
-        .groups = "drop"
-      )
+    # Kolom yang nilainya konstan per sektor di tiap tahun (per-kapita):
+    # ambil nilai unik (first), bukan di-sum.
+    is_constant_per_year <- indicator_col %in% c("GDP_PER_CAPITA", "INCOME_PER_CAPITA")
+    
+    if (is_constant_per_year) {
+      df |>
+        dplyr::group_by(YEAR) |>
+        dplyr::summarise(
+          Total = dplyr::first(.data[[indicator_col]]),
+          .groups = "drop"
+        )
+    } else {
+      df |>
+        dplyr::group_by(YEAR) |>
+        dplyr::summarise(
+          Total = sum(.data[[indicator_col]], na.rm = TRUE),
+          .groups = "drop"
+        )
+    }
   }
 
   output$projection_plot <- renderPlot({
@@ -1649,6 +1813,52 @@ server <- function(input, output, session) {
       file_a2_path  <- if (!is.null(a2_file())) a2_file()$datapath else NULL
       file_a3_path  <- if (!is.null(a3_file())) a3_file()$datapath else NULL
       
+      profile_info <- baseline_data()$profile
+      
+      # Fallback jika profile NULL / tidak lengkap
+      if (is.null(profile_info)) {
+        warning("[REPORT] profile NULL; menggunakan default.")
+        profile_info <- list(
+          area_name = "Wilayah Tidak Diketahui",
+          currency  = "Rp Juta"
+        )
+      }
+      
+      unit_value <- if (!is.null(profile_info$currency) &&
+                        nzchar(as.character(profile_info$currency)) &&
+                        !is.na(profile_info$currency)) {
+        as.character(profile_info$currency)
+      } else {
+        "Rp Juta"
+      }
+      
+      location_val <- if (!is.null(profile_info$area_name) &&
+                          nzchar(as.character(profile_info$area_name)) &&
+                          !is.na(profile_info$area_name)) {
+        as.character(profile_info$area_name)
+      } else {
+        "Wilayah Tidak Diketahui"
+      }
+      
+      # --- LOG DEBUG (opsional, hapus setelah stabil) ---
+      message("[REPORT] profile_info$area_name = ", profile_info$area_name)
+      message("[REPORT] profile_info$currency  = ", profile_info$currency)
+      message("[REPORT] unit_value             = ", unit_value)
+      message("[REPORT] location_val           = ", location_val)
+      
+      message("[DEBUG] length(attr(hasil, 'sector_names'))  : ",
+              length(attr(result$res$scenario, "sector_names")))
+      message("[DEBUG] class(attr(hasil, 'sector_names'))   : ",
+              paste(class(attr(result$res$scenario, "sector_names")), collapse = ", "))
+      message("[DEBUG] length(result$res$baseline_meta$sector_names): ",
+              length(result$res$baseline_meta$sector_names))
+      message("[DEBUG] head(sector_names, 3): ",
+              paste(head(result$res$baseline_meta$sector_names, 3), collapse = ", "))
+      message("[DEBUG] any NA di sector_names: ",
+              any(is.na(result$res$baseline_meta$sector_names)))
+      message("[DEBUG] any empty di sector_names: ",
+              any(!nzchar(as.character(result$res$baseline_meta$sector_names))))
+      
       start_time <- Sys.time()
       
       tryCatch({
@@ -1661,11 +1871,11 @@ server <- function(input, output, session) {
             end_time           = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
             scenario_name      = scen_label(),
             assumption_active  = active,
-            initial_year       = input$initial_year,
-            end_year           = input$end_year,
-            time_step          = input$time_step,
-            unit               = "Rp Juta",       # sesuaikan dengan baseline Anda
-            location           = "Bukecap", # sesuaikan dari baseline
+            initial_year       = initial_year_val(),
+            end_year           = end_year_val(),
+            time_step          = time_step_val(),
+            unit     = unit_value,
+            location = location_val,
             years              = result$res$baseline_meta$years,
             sector_names       = result$res$baseline_meta$sector_names,
             result_scenario    = as.data.frame(result$res$scenario),
@@ -1679,7 +1889,16 @@ server <- function(input, output, session) {
             file_bau           = file_bau_path,
             file_a1            = file_a1_path,
             file_a2            = file_a2_path,
-            file_a3            = file_a3_path
+            file_a3            = file_a3_path,
+            file_baseline_name = if (isTRUE(input$load_rds)) {
+              if (!is.null(input$descriptive_rds_file)) input$descriptive_rds_file$name else NULL
+            } else {
+              if (!is.null(input$io_output_file)) input$io_output_file$name else NULL
+            },
+            file_bau_name      = if (!is.null(input$projection_area_file)) input$projection_area_file$name else NULL,
+            file_a1_name       = if (!is.null(a1_file())) a1_file()$name else NULL,
+            file_a2_name       = if (!is.null(a2_file())) a2_file()$name else NULL,
+            file_a3_name       = if (!is.null(a3_file())) a3_file()$name else NULL
           ),
           envir = new.env(parent = globalenv()),
           quiet = TRUE
@@ -1750,6 +1969,21 @@ server <- function(input, output, session) {
       openxlsx::addWorksheet(wb, "Recap_BAU")
       openxlsx::writeData(wb, "Recap_BAU", recap_bau)
       
+      if ("GDP_PER_CAPITA" %in% names(hasil_proyeksi()$scenario)) {
+        per_kapita_sc <- hasil_proyeksi()$scenario |>
+          dplyr::group_by(YEAR) |>
+          dplyr::summarise(
+            Populasi            = dplyr::first(POPULATION),
+            PDRB_Total_Juta     = sum(GDP, na.rm = TRUE),
+            PDRB_per_Kapita     = dplyr::first(GDP_PER_CAPITA),
+            Income_Total_Juta   = sum(INCOME, na.rm = TRUE),
+            Income_per_Kapita   = dplyr::first(INCOME_PER_CAPITA),
+            .groups = "drop"
+          )
+        openxlsx::addWorksheet(wb, "Per_Kapita")
+        openxlsx::writeData(wb, "Per_Kapita", per_kapita_sc)
+      }
+      
       openxlsx::addWorksheet(wb, "Detail_Skenario")
       openxlsx::writeData(wb, "Detail_Skenario", hasil_proyeksi()$scenario)
       
@@ -1767,7 +2001,7 @@ server <- function(input, output, session) {
                       "Interval", "Jumlah Sektor", "Tanggal Proses"),
         Nilai = c(scen_label(),
                   paste(hasil_proyeksi()$active, collapse = " + "),
-                  input$initial_year, input$end_year, input$time_step,
+                  initial_year_val(), end_year_val(), time_step_val(),
                   length(hasil_proyeksi()$baseline_meta$sector_names),
                   format(Sys.time(), "%Y-%m-%d %H:%M:%S"))
       )
@@ -1855,10 +2089,10 @@ server <- function(input, output, session) {
   # ---- User guide ----
   output$user_guide <- renderUI({
     guide_paths <- c(
-      "helpfile/quick_user_guide.Rmd",
+      "helpfile/quick_user_guide_ID.Rmd",
       "../helpfile/quick_user_guide.Rmd",
-      file.path(getwd(), "helpfile", "quick_user_guide.Rmd"),
-      file.path(dirname(getwd()), "helpfile", "quick_user_guide.Rmd")
+      file.path(getwd(), "helpfile", "quick_user_guide_ID.Rmd"),
+      file.path(dirname(getwd()), "helpfile", "quick_user_guide_ID.Rmd")
     )
     
     for (path in guide_paths) {

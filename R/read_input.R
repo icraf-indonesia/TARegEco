@@ -92,6 +92,13 @@ read_input_file <- function(path, sheet = NULL, skip = 0, header = FALSE, as_mat
 #'
 #' @export
 load_projection_baseline <- function(path, projection_area_file_bau) {
+  
+  profile <- list(
+    area_name = "Wilayah Tidak Diketahui",
+    year      = NA_integer_,
+    currency  = "Rp Juta",
+    io_source = "-"
+  )
 
   if (grepl("\\.rds$", path, ignore.case = TRUE)) {
 
@@ -111,6 +118,22 @@ load_projection_baseline <- function(path, projection_area_file_bau) {
     output_multiplier <- io$multipliers$output
     linkage_table     <- io$linkage
     growth_rate       <- io$growth_rate
+    
+    if (!is.null(io$profile) && is.list(io$profile)) {
+      profile <- list(
+        area_name = io$profile$area_name %||% profile$area_name,
+        year      = io$profile$year      %||% profile$year,
+        currency  = io$profile$currency  %||% profile$currency,
+        io_source = io$profile$io_source %||% profile$io_source
+      )
+    } else if (!is.null(io$metadata$profile) && is.list(io$metadata$profile)) {
+      profile <- list(
+        area_name = io$metadata$profile$area_name %||% profile$area_name,
+        year      = io$metadata$profile$year      %||% profile$year,
+        currency  = io$metadata$profile$currency  %||% profile$currency,
+        io_source = io$metadata$profile$io_source %||% profile$io_source
+      )
+    }
 
     # Intermediate consumption: langsung dari RDS, fallback ke full_io_table
     if (!is.null(io$intermediate_consumption)) {
@@ -141,7 +164,52 @@ load_projection_baseline <- function(path, projection_area_file_bau) {
     # =====================================================
     # EXCEL BRANCH
     # =====================================================
-    gdp_baseline <- read_input_file(path, sheet = "GDP", header = TRUE)
+    sheets <- readxl::excel_sheets(path)
+    
+    profile_sheet <- intersect(
+      c("Profile Data", "Profil Data", "0. Profil Data", "Profile", "Profil"),
+      sheets
+    )[1]
+    
+    if (!is.na(profile_sheet) && length(profile_sheet) == 1) {
+      profile_raw <- tryCatch(
+        readxl::read_excel(path, sheet = profile_sheet, col_names = TRUE),
+        error = function(e) NULL
+      )
+      
+      if (!is.null(profile_raw) && nrow(profile_raw) > 0) {
+        pnames <- tolower(trimws(as.character(profile_raw[[1]])))
+        pvals  <- as.character(profile_raw[[2]])
+        
+        pick <- function(pattern) {
+          idx <- grep(pattern, pnames, ignore.case = TRUE)
+          if (length(idx) > 0) trimws(pvals[idx[1]]) else NA_character_
+        }
+        
+        area_name <- pick("lokasi|area")
+        year_val  <- pick("tahun|year")
+        currency  <- pick("mata uang|currency")
+        io_source <- pick("sumber|source")
+        
+        profile <- list(
+          area_name = if (!is.na(area_name)) area_name else profile$area_name,
+          year      = if (!is.na(year_val))  as.integer(year_val) else profile$year,
+          currency  = if (!is.na(currency))  currency  else profile$currency,
+          io_source = if (!is.na(io_source)) io_source else profile$io_source
+        )
+      }
+    }
+    
+    gdp_sheet_candidates <- c("GDP", "Analisis Deskriptif", "Analisis_Deskriptif",
+                              "Gdp", "gdp")
+    gdp_sheet <- intersect(gdp_sheet_candidates, sheets)[1]
+    
+    if (is.na(gdp_sheet) || length(gdp_sheet) == 0) {
+      stop("Sheet 'GDP' (atau alias 'Analisis Deskriptif') tidak ditemukan. ",
+           "Sheet tersedia: ", paste(sheets, collapse = ", "))
+    }
+    
+    gdp_baseline <- read_input_file(path, sheet = gdp_sheet, header = TRUE)
     if (is.null(gdp_baseline$CATEGORY)) {
       gdp_baseline$CATEGORY <- rep("Unknown", nrow(gdp_baseline))
     }
@@ -263,7 +331,8 @@ load_projection_baseline <- function(path, projection_area_file_bau) {
     area_matrix_bau          = area_matrix_bau,
     projection_area_bau      = projection_area_bau,
     constrained              = constrained,
-    unconstrained            = unconstrained
+    unconstrained            = unconstrained,
+    profile                  = profile
   )
 }
 
@@ -445,4 +514,122 @@ load_scenario_inputs <- function(sc_input, P_default) {
     lpc_scenario         = lpc_sc,
     io_changes           = io_sc
   )
+}
+
+#' Load Population Projection from Excel or CSV
+#'
+#' Membaca file proyeksi penduduk dengan 2 kolom wajib:
+#' `Tahun` (atau `YEAR`) dan `Populasi` (atau `POPULATION`).
+#' Nama kolom dideteksi secara fleksibel (case-insensitive).
+#'
+#' @param path Character. Path ke file `.xlsx`, `.xls`, atau `.csv`.
+#' @param sheet Character atau Integer. Nama/indeks sheet untuk file Excel.
+#'   Default: sheet pertama.
+#'
+#' @return Tibble dengan kolom `Tahun` (integer) dan `Populasi` (numeric),
+#'   terurut menaik berdasarkan Tahun. Mengembalikan `NULL` jika file tidak
+#'   valid atau kolom wajib tidak ditemukan.
+#'
+#' @export
+load_population_projection <- function(path, sheet = 1) {
+  if (is.null(path) || !file.exists(path)) return(NULL)
+  
+  # ---- 1. Baca file sesuai ekstensi ----
+  ext <- tolower(tools::file_ext(path))
+  
+  df <- tryCatch({
+    if (ext %in% c("xlsx", "xls")) {
+      as.data.frame(readxl::read_excel(path, sheet = sheet))
+    } else if (ext == "csv") {
+      as.data.frame(readr::read_csv(path, show_col_types = FALSE))
+    } else {
+      return(NULL)
+    }
+  }, error = function(e) {
+    warning("[load_population_projection] Gagal baca file: ", conditionMessage(e))
+    NULL
+  })
+  
+  if (is.null(df) || nrow(df) == 0) return(NULL)
+  
+  # ---- 2. Deteksi kolom Tahun dan Populasi secara fleksibel ----
+  col_names <- tolower(trimws(colnames(df)))
+  
+  year_candidates <- c("tahun", "year", "yr", "periode", "period")
+  pop_candidates  <- c("populasi", "population", "pop", "jumlah_penduduk",
+                       "jumlah penduduk", "penduduk", "total_population")
+  
+  year_col <- which(col_names %in% year_candidates)
+  pop_col  <- which(col_names %in% pop_candidates)
+  
+  if (length(year_col) == 0 || length(pop_col) == 0) {
+    warning(
+      "[load_population_projection] Kolom 'Tahun' dan/atau 'Populasi' tidak ditemukan. ",
+      "Kolom tersedia: ", paste(colnames(df), collapse = ", ")
+    )
+    return(NULL)
+  }
+  
+  # Ambil kolom pertama jika ada duplikat
+  year_col <- year_col[1]
+  pop_col  <- pop_col[1]
+  
+  # ---- 3. Sanitasi nilai ----
+  years <- suppressWarnings(as.integer(df[[year_col]]))
+  pops  <- suppressWarnings(as.numeric(df[[pop_col]]))
+  
+  # Buang baris dengan NA
+  valid_idx <- !is.na(years) & !is.na(pops) & pops > 0
+  years <- years[valid_idx]
+  pops  <- pops[valid_idx]
+  
+  if (length(years) == 0) {
+    warning("[load_population_projection] Tidak ada baris valid setelah sanitasi.")
+    return(NULL)
+  }
+  
+  # ---- 4. Urutkan dan kembalikan tibble ----
+  ord <- order(years)
+  tibble::tibble(
+    Tahun    = years[ord],
+    Populasi = pops[ord]
+  )
+}
+
+
+#' Interpolate Population Vector to Match Projection Years
+#'
+#' Menginterpolasi (dan ekstrapolasi linear) vektor populasi agar sesuai
+#' dengan rentang tahun proyeksi. Jika tahun berada di luar rentang data,
+#' ekstrapolasi linear menggunakan 2 titik terdekat.
+#'
+#' @param pop_df Tibble hasil `load_population_projection()`.
+#' @param target_years Numeric vector. Tahun proyeksi yang diinginkan.
+#'
+#' @return Numeric vector sepanjang `length(target_years)` dengan nilai
+#'   populasi hasil interpolasi.
+#'
+#' @export
+interpolate_population <- function(pop_df, target_years) {
+  if (is.null(pop_df) || nrow(pop_df) == 0) {
+    stop("[interpolate_population] pop_df kosong.")
+  }
+  
+  pop_df <- pop_df[order(pop_df$Tahun), ]
+  
+  # Jika hanya 1 titik, anggap populasi konstan
+  if (nrow(pop_df) == 1) {
+    return(rep(pop_df$Populasi[1], length(target_years)))
+  }
+  
+  # Interpolasi linear; ekstrapolasi otomatis dengan rule = 2
+  # (batas kiri/kanan = titik terdekat)
+  approx(
+    x    = pop_df$Tahun,
+    y    = pop_df$Populasi,
+    xout = target_years,
+    method = "linear",
+    rule   = 2,
+    ties   = mean
+  )$y
 }
