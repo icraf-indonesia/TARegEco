@@ -29,7 +29,12 @@ params:
   file_bau: NA            
   file_a1: NA             
   file_a2: NA            
-  file_a3: NA            
+  file_a3: NA
+  file_baseline_name: NA
+  file_bau_name: NA
+  file_a1_name: NA
+  file_a2_name: NA
+  file_a3_name: NA            
 ---
 
 ```{r setup, include=FALSE, warning=FALSE, message=FALSE}
@@ -63,27 +68,115 @@ sector_names     <- params$sector_names
 years            <- params$years
 active_assumptions <- params$assumption_active
 
-# Agregasi by year: sum semua sektor
-agg_by_year <- function(df, col) {
-  df |> dplyr::group_by(YEAR) |>
-    dplyr::summarise(Total = sum(.data[[col]], na.rm = TRUE), .groups = "drop")
+# ---- Flag: apakah ada skenario (A1/A2/A3) atau hanya BAU? ----
+is_scenario <- any(c("A1", "A2", "A3") %in% active_assumptions)
+
+# Satuan Rupiah mengikuti params$unit
+satuan_uang <- if (!is.null(params$unit) && nzchar(as.character(params$unit)) && 
+                   !is.na(params$unit) && params$unit != "NA") {
+  as.character(params$unit)
+} else {
+  "Rp Juta"  # fallback
 }
 
-# Siapkan seri per indikator
+# ---------------------------------------------------------------
+# Helper: format dinamis satuan mata uang (input diasumsikan Juta)
+#   - x >= 1e6  -> "Triliun"
+#   - x >= 1e3  -> "Miliar"
+#   - selainnya -> "Juta"
+# Catatan: label satuan kata (Juta/Miliar/Triliun) tetap generik
+# karena params$unit hanya mendeskripsikan satuan dasar (mis. "Rp").
+# ---------------------------------------------------------------
+# Kolom indikator yang bersatuan uang (input diasumsikan Juta)
+money_cols <- c("GDP", "INCOME", "INCOME_PER_CAPITA", "SURPLUS", "OUTPUT")
+
+# Helper: apakah suatu kolom indikator bersatuan uang?
+is_money <- function(col) col %in% money_cols
+
+# Format dinamis: hanya suffix skala (Juta/Miliar/Triliun).
+# Prefix satuan (mis. "Rp") TIDAK ditampilkan karena nama kolom
+# sudah mencantumkan satuan.
+# Argumen `satuan` dipertahankan untuk kompatibilitas pemanggil lama,
+# tetapi tidak dipakai di output.
+format_uang <- function(x, satuan = satuan_uang) {
+  ifelse(is.na(x), "-",
+    ifelse(x == 0, "0",
+      ifelse(x >= 1e6,
+        paste0(format(round(x / 1e6, 2), big.mark = ",", decimal.mark = ".", nsmall = 2), " Triliun"),
+      ifelse(x >= 1e3,
+        paste0(format(round(x / 1e3, 2), big.mark = ",", decimal.mark = ".", nsmall = 2), " Miliar"),
+        paste0(format(round(x, 2), big.mark = ",", decimal.mark = ".", nsmall = 2), " Juta"))))
+  )
+}
+
+# Agregasi by year:
+# - Kolom biasa (GDP, LABOUR, dll) → di-SUM antar sektor
+# - Kolom per kapita (INCOME_PER_CAPITA) → diambil nilai unik per tahun (first)
+agg_by_year <- function(df, col) {
+  # ---- Deteksi kolom tahun secara fleksibel ----
+  year_col <- NULL
+  for (cand in c("YEAR", "year", "Year", "Tahun", "tahun", "PERIODE", "periode")) {
+    if (cand %in% names(df)) {
+      year_col <- cand
+      break
+    }
+  }
+  if (is.null(year_col)) {
+    stop(
+      "[agg_by_year] Kolom tahun tidak ditemukan. Kolom tersedia: ",
+      paste(names(df), collapse = ", ")
+    )
+  }
+  
+  # ---- Normalisasi: rename kolom tahun ke 'YEAR' dan konversi ke numerik ----
+  if (year_col != "YEAR") {
+    df <- df |> dplyr::rename(YEAR = dplyr::all_of(year_col))
+  }
+  df$YEAR <- suppressWarnings(as.numeric(df$YEAR))
+  
+  # ---- Agregasi ----
+  is_constant_per_year <- col %in% c("GDP_PER_CAPITA", "INCOME_PER_CAPITA")
+  
+  if (is_constant_per_year) {
+    df |> dplyr::group_by(YEAR) |>
+      dplyr::summarise(
+        Total = dplyr::first(.data[[col]]),
+        .groups = "drop"
+      )
+  } else {
+    df |> dplyr::group_by(YEAR) |>
+      dplyr::summarise(
+        Total = sum(.data[[col]], na.rm = TRUE),
+        .groups = "drop"
+      )
+  }
+}
+
+# Siapkan seri per indikator — hanya BAU jika tidak ada skenario
 build_series <- function(col) {
   b <- agg_by_year(result_bau, col) |> dplyr::mutate(Seri = "BAU")
-  s <- agg_by_year(result_scenario, col) |> dplyr::mutate(Seri = "Skenario")
+  if (!is_scenario) return(b)
+  s <- agg_by_year(result_scenario, col) |> dplyr::mutate(Seri = "Intervensi")
   dplyr::bind_rows(b, s)
 }
 
-# Helper: bikin tabel rekapitulasi per indikator (BAU vs Skenario + selisih)
+# Helper: bikin tabel rekapitulasi per indikator
 build_recap_table <- function(col, label) {
-  b <- agg_by_year(result_bau, col)      |> dplyr::rename(BAU = Total)
+  b <- agg_by_year(result_bau, col) |> dplyr::rename(BAU = Total)
+
+  if (!is_scenario) {
+    return(b |> dplyr::rename(Tahun = YEAR))
+  }
+
   s <- agg_by_year(result_scenario, col) |> dplyr::rename(Skenario = Total)
-  
+
   dplyr::left_join(b, s, by = "YEAR") |>
     dplyr::mutate(
-      Selisih_Pct = (Skenario / BAU - 1) * 100
+      Selisih_Pct = dplyr::if_else(
+        is.na(BAU) | is.na(Skenario) | BAU == 0,
+        NA_real_,
+        (Skenario / BAU - 1) * 100
+      )
     ) |>
     dplyr::rename(
       Tahun          = YEAR,
@@ -91,85 +184,137 @@ build_recap_table <- function(col, label) {
     )
 }
 
-# Helper: bikin ggplot interaktif per indikator
-# Helper: bikin ggplot interaktif per indikator
 build_plot <- function(col, label) {
   d <- build_series(col)
-  d$Seri <- factor(d$Seri, levels = c("BAU", "Skenario"))
-  
-  # Ambil satuan dari ind_units (jika ada), fallback ke string kosong
-  unit <- if (exists("ind_units") && col %in% names(ind_units)) {
-    ind_units[[col]]
+  d$Seri <- factor(d$Seri, levels = c("BAU", "Intervensi"))
+
+  unit <- if (exists("ind_units") && col %in% names(ind_units)) ind_units[[col]] else ""
+
+  y_title <- if (nzchar(unit)) paste0(label, " (", unit, ")") else label
+
+  # Format nilai untuk tooltip: dinamis untuk indikator uang
+   nilai_txt <- if (is_money(col)) {
+    format_uang(d$Total, satuan = satuan_uang)
   } else {
-    ""
+    paste0(scales::comma(d$Total, accuracy = 1), if (nzchar(unit)) paste0(" ", unit) else "")
   }
-  
-  # Y axis title dengan satuan
-  y_title <- if (nzchar(unit)) {
-    paste0(label, " (", unit, ")")
-  } else {
-    label
-  }
-  
+
   p <- ggplot(
     d,
     aes(
-      x = YEAR,
-      y = Total,
-      color = Seri,
-      group = Seri,
-      text  = paste0(
+      x = YEAR, y = Total, color = Seri, group = Seri,
+      text = paste0(
         "Tahun: ", YEAR,
         "<br>Seri: ", Seri,
-        "<br>Nilai: ", scales::comma(Total, accuracy = 1),
-        if (nzchar(unit)) paste0(" ", unit) else ""
+        "<br>Nilai: ", nilai_txt
       )
     )
   ) +
-    geom_line(linewidth = 1.2) +
-    geom_point(size = 2.5) +
+    geom_line(linewidth = 1.2, na.rm = TRUE) +
+    geom_point(size = 2.5, na.rm = TRUE) +
     scale_x_continuous(
       breaks = unique(d$YEAR),
       labels = function(x) format(x, big.mark = "", scientific = FALSE)
     ) +
     scale_y_continuous(labels = scales::comma) +
-    scale_color_manual(values = c("BAU" = "#7f8c8d", "Skenario" = "#27ae60")) +
     theme_minimal(base_size = 13) +
-    theme(
-      axis.text.x = element_text(
-        angle  = 45,
-        hjust  = 1,
-        vjust  = 1
-      )
-    ) +
-    labs(
-      title = paste("Proyeksi", label),
-      x     = "Tahun",
-      y     = y_title,
-      color = NULL
-    )
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) +
+    labs(title = paste("Proyeksi", label), x = "Tahun", y = y_title, color = NULL)
   
+  # Di build_plot: penyesuaian scale_color_manual
+if (is_scenario) {
+  p <- p + scale_color_manual(values = c("BAU" = "#7f8c8d", "Intervensi" = "#27ae60"))
+} else {
+  p <- p + scale_color_manual(values = c("BAU" = "#7f8c8d"))
+}
+
   plotly::ggplotly(p, tooltip = "text")
 }
 
 # Mapping: kolom → label (digunakan untuk iterasi)
-ind_cols   <- c("GDP", "LABOUR", "INCOME", "SURPLUS", "OUTPUT")
+ind_cols   <- c("GDP", "LABOUR", "INCOME", "INCOME_PER_CAPITA", "SURPLUS", "OUTPUT")
 ind_titles <- c(
-  "GDP"     = "Proyeksi PDRB",
-  "LABOUR"  = "Proyeksi Serapan Tenaga Kerja",
-  "INCOME"  = "Proyeksi Pendapatan Tenaga Kerja",
-  "SURPLUS" = "Proyeksi Surplus Usaha Bruto",
-  "OUTPUT"  = "Proyeksi Output Total"
+  "GDP"                = "Proyeksi PDRB",
+  "LABOUR"             = "Proyeksi Serapan Tenaga Kerja",
+  "INCOME"             = "Proyeksi Pendapatan Tenaga Kerja",
+  "INCOME_PER_CAPITA"  = "Proyeksi Pendapatan per Kapita",
+  "SURPLUS"            = "Proyeksi Surplus Usaha Bruto",
+  "OUTPUT"             = "Proyeksi Output Total"
 )
+
 ind_units  <- c(
-  "GDP"     = "Rp Juta",
-  "LABOUR"  = "Orang",
-  "INCOME"  = "Rp Juta",
-  "SURPLUS" = "Rp Juta",
-  "OUTPUT"  = "Rp Juta"
+  "GDP"                = paste0(satuan_uang, "/Tahun"),
+  "LABOUR"             = "Orang/Tahun",
+  "INCOME"             = paste0(satuan_uang, "/Tahun"),
+  "INCOME_PER_CAPITA"  = paste0(satuan_uang, "/Orang"),
+  "SURPLUS"            = paste0(satuan_uang, "/Tahun"),
+  "OUTPUT"             = paste0(satuan_uang, "/Tahun")
 )
 
 has_a3 <- "A3" %in% active_assumptions
+
+# ---------------------------------------------------------------
+# Helper: tambahkan kolom "Pertumbuhan per Tahun" dengan bar HTML
+# yang mendukung nilai negatif.
+#   - Positif: bar ke kanan, warna `color_pos` (default biru)
+#   - Negatif: bar ke kiri, warna `color_neg` (default merah)
+#   - Lebar bar dinormalisasi terhadap |CAGR| maksimum
+# Input:
+#   - df: data frame dengan kolom `Pertumbuhan (%)` (CAGR dalam persen)
+#   - color_pos: warna bar positif (default "#4A90E2")
+#   - color_neg: warna bar negatif (default "#e74c3c")
+# Output:
+#   - df tanpa kolom `Pertumbuhan (%)`, dengan kolom baru
+#     `Pertumbuhan per Tahun` berupa HTML bar
+# ---------------------------------------------------------------
+add_growth_bar <- function(df,
+                           color = "#4A90E2",
+                           neg_color = "#e74c3c") {
+  if (!"Pertumbuhan (%)" %in% names(df)) return(df)
+
+  df <- df |>
+    dplyr::mutate(
+      .cagr      = dplyr::coalesce(.data[["Pertumbuhan (%)"]], 0),
+      .max_abs   = suppressWarnings(max(abs(.cagr), na.rm = TRUE)),
+      .is_neg    = .cagr < 0,
+      .bar_width = dplyr::if_else(
+        is.na(.max_abs) | .max_abs == 0 | is.infinite(.max_abs),
+        0,
+        pmax(0, pmin(100, abs(.cagr) / .max_abs * 100))
+      ),
+      .bar_color = dplyr::if_else(.is_neg, neg_color, color),
+      .bar_align = dplyr::if_else(
+        .is_neg,
+        "margin-left:auto;",
+        "margin-right:auto; margin-left:0;"
+      ),
+      .label_txt = dplyr::if_else(
+        .is_neg,
+        sprintf("%.2f%%", .cagr),
+        sprintf("+%.2f%%", .cagr)
+      ),
+      .label_color = dplyr::if_else(.is_neg, neg_color, "#666666"),
+      `Pertumbuhan per Tahun` = sprintf(
+        '<div style="display:flex; align-items:center; gap:6px;">
+           <div style="flex:1; position:relative; background:#eee; height:14px; border-radius:3px; overflow:hidden;">
+             <div style="position:absolute; top:0; bottom:0; left:50%%; width:1px; background:#ccc;"></div>
+             <div style="position:absolute; top:0; bottom:0; %s width:%.1f%%; background:%s; border-radius:3px;"></div>
+           </div>
+           <span style="font-size:11px; color:%s; min-width:70px; text-align:right;">%s</span>
+         </div>',
+        .bar_align,
+        .bar_width,
+        .bar_color,
+        .label_color,
+        .label_txt
+      )
+    ) |>
+    dplyr::select(-.cagr, -.max_abs, -.is_neg, -.bar_width,
+                  -.bar_color, -.bar_align, -.label_txt, -.label_color,
+                  -`Pertumbuhan (%)`)
+
+  df
+}
 ```
 
 
@@ -186,14 +331,35 @@ safe_str <- function(val, default = "-") {
   return(as.character(val))
 }
 
-# --- Siapkan daftar file input ---
+# Helper: gunakan nama file asli, fallback ke basename(path), lalu default
+safe_filename <- function(name_val, path_val, default = "-") {
+  # Prioritas 1: nama file asli dari input$file$name
+  if (!is.null(name_val) && length(name_val) > 0 &&
+      !is.na(name_val) && nzchar(as.character(name_val)) &&
+      as.character(name_val) != "NA") {
+    return(as.character(name_val))
+  }
+  # Prioritas 2: basename dari path (jika path valid & bukan temp)
+  if (!is.null(path_val) && length(path_val) > 0 &&
+      !is.na(path_val) && nzchar(as.character(path_val)) &&
+      as.character(path_val) != "NA") {
+    bn <- basename(as.character(path_val))
+    # Jika basename berupa angka/nomor temp (mis. "0.xlsx", "1.xlsx"), anggap tidak valid
+    if (!grepl("^\\d+\\.(xlsx?|rds|csv)$", bn, ignore.case = TRUE)) {
+      return(bn)
+    }
+  }
+  default
+}
+
+# --- Siapkan daftar file input (nama file asli, bukan path temp) ---
 input_files <- tibble::tribble(
   ~Kategori,                     ~Keterangan,
-  "Baseline (Deskriptif)",       safe_str(params$file_baseline),
-  "Proyeksi Lahan BAU",          safe_str(params$file_bau),
-  "Asumsi 1: Perubahan Lahan",   safe_str(params$file_a1, "- (tidak dipakai)"),
-  "Asumsi 2: Produktivitas LPC", safe_str(params$file_a2, "- (tidak dipakai)"),
-  "Asumsi 3: Hilirisasi",        safe_str(params$file_a3, "- (tidak dipakai)")
+  "Baseline (Deskriptif)",       safe_filename(params$file_baseline_name, params$file_baseline),
+  "Proyeksi Lahan BAU",          safe_filename(params$file_bau_name,      params$file_bau),
+  "Asumsi 1: Perubahan Lahan",   safe_filename(params$file_a1_name,       params$file_a1, "(tidak dipakai)"),
+  "Asumsi 2: Produktivitas LPC", safe_filename(params$file_a2_name,       params$file_a2, "(tidak dipakai)"),
+  "Asumsi 3: Hilirisasi",        safe_filename(params$file_a3_name,       params$file_a3, "(tidak dipakai)")
 )
 
 # --- Log utama ---
@@ -219,7 +385,7 @@ analysis_log_full <- dplyr::bind_rows(
 )
 
 analysis_log_full %>%
-  kableExtra::kbl(caption = "Log Analisis", escape = FALSE) %>%
+  kableExtra::kbl(escape = FALSE) %>%
   kableExtra::kable_paper("hover", full_width = FALSE) %>%
   kableExtra::kable_styling(font_size = 13)
 ```
@@ -228,23 +394,119 @@ analysis_log_full %>%
 
 # Pendahuluan
 
-Laporan ini menyajikan hasil proyeksi ekonomi regional untuk `r params$location` dengan skenario `r params$scenario_name`. Analisis menggunakan model Supply-Constrained Mixed Input-Output (Hubacek & Sun, 2001) untuk memproyeksikan indikator makroekonomi regional pada periode `r params$initial_year`–`r params$end_year`.
+Laporan ini menyajikan hasil proyeksi ekonomi regional dengan skenario intervensi. Proyeksi dilakukan menggunakan model **Supply-Constrained Mixed Input-Output** (Hubacek & Sun, 2001) yang menggabungkan tabel Input-Output regional dengan batasan kapasitas lahan untuk menghasilkan estimasi indikator makroekonomi yang konsisten. 
 
-Asumsi yang diaktifkan: `r paste(active_assumptions, collapse = ", ")`
+Tabel berikut merangkum profil analisis yang digunakan dalam laporan ini.
 
-```{r, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
-descriptions <- c(
-  "BAU" = "**BAU (Business As Usual)** — Baseline tanpa intervensi; hanya tutupan lahan BAU yang digunakan.",
-  "A1"  = "**Asumsi 1 (Perubahan Lahan)** — Perubahan luas/distribusi tutupan lahan memengaruhi output sektor berbasis lahan.",
-  "A2"  = "**Asumsi 2 (Peningkatan Produktivitas)** — Peningkatan LPC (Land Productivity Coefficient) secara bertahap menuju target.",
-  "A3"  = "**Asumsi 3 (Hilirisasi)** — Restrukturisasi tabel Input-Output via RAS balancing yang mengubah struktur keterkaitan antar sektor."
+```{r pendahuluan-profil, echo=FALSE, message=FALSE, warning=FALSE}
+# Helper: amankan nilai
+safe_val <- function(x, default = "-") {
+  if (is.null(x) || length(x) == 0 || (length(x) == 1 && is.na(x)) ||
+      identical(as.character(x), "NA") || !nzchar(as.character(x))) {
+    return(default)
+  }
+  as.character(x)
+}
+
+# Ringkasan profil
+profil_df <- tibble::tibble(
+  Parameter = c(
+    "Lokasi / Wilayah",
+    "Nama Skenario",
+    "Periode Proyeksi",
+    "Interval Proyeksi",
+    "Satuan Nilai"
+  ),
+  Nilai = c(
+    safe_val(params$location, "Wilayah Tidak Diketahui"),
+    safe_val(params$scenario_name, "BAU"),
+    paste0(
+      safe_val(params$initial_year, "?"),
+      " – ",
+      safe_val(params$end_year, "?")
+    ),
+    paste0(safe_val(params$time_step, "?"), " tahun"),
+    safe_val(params$unit, "Rp Juta")
+  )
 )
 
-for (a in active_assumptions) {
-  if (a %in% names(descriptions)) {
-    cat("- ", descriptions[[a]], "\n", sep = "")
-  }
+profil_df |>
+  kableExtra::kbl(
+    col.names = c("Parameter", "Keterangan"),
+    align = "ll",
+    escape = TRUE
+  ) |>
+  kableExtra::kable_paper("hover", full_width = FALSE) |>
+  kableExtra::kable_styling(
+    font_size = 13,
+    bootstrap_options = c("striped", "hover", "condensed")
+  )
+```
+
+## Asumsi yang Diaktifkan
+
+```{r asumsi-profil, echo=FALSE, message=FALSE, warning=FALSE}
+descriptions <- c(
+  "BAU" = "Baseline tanpa intervensi; hanya tutupan lahan BAU yang digunakan.",
+  "A1"  = "Perubahan luas/distribusi tutupan lahan memengaruhi output sektor berbasis lahan.",
+  "A2"  = "Peningkatan LPC (Land Productivity Coefficient) secara bertahap menuju target.",
+  "A3"  = "Restrukturisasi tabel Input-Output via RAS balancing yang mengubah struktur keterkaitan antar sektor."
+)
+
+# Pastikan BAU selalu masuk jika tidak ada asumsi
+asumsi_list <- if (length(active_assumptions) > 0) {
+  active_assumptions
+} else {
+  "BAU"
 }
+
+asumsi_df <- tibble::tibble(
+  Kode    = asumsi_list,
+  Nama    = dplyr::case_when(
+    asumsi_list == "BAU" ~ "Business As Usual (BAU)",
+    asumsi_list == "A1"  ~ "Asumsi 1 — Perubahan Lahan",
+    asumsi_list == "A2"  ~ "Asumsi 2 — Peningkatan Produktivitas LPC",
+    asumsi_list == "A3"  ~ "Asumsi 3 — Hilirisasi",
+    TRUE                 ~ asumsi_list
+  ),
+  Deskripsi = dplyr::coalesce(
+    descriptions[asumsi_list],
+    "Tidak ada deskripsi."
+  )
+)
+
+asumsi_df |>
+  kableExtra::kbl(
+    col.names = c("Kode", "Nama Asumsi", "Deskripsi Singkat"),
+    align = "lll",
+    escape = TRUE
+  ) |>
+  kableExtra::kable_paper("hover", full_width = FALSE) |>
+  kableExtra::kable_styling(
+    font_size = 13,
+    bootstrap_options = c("striped", "hover", "condensed")
+  )
+```
+
+## Catatan Metodologi
+
+Laporan ini menyajikan hasil proyeksi ekonomi regional menggunakan model **Supply-Constrained Mixed Input-Output** (Hubacek & Sun, 2001). Model ini menggabungkan tabel Input-Output regional dengan **batasan kapasitas lahan** — perubahan tutupan lahan (Asumsi 1), peningkatan produktivitas lahan (Asumsi 2), dan restrukturisasi struktur ekonomi (Asumsi 3) — untuk menghasilkan proyeksi indikator makroekonomi yang konsisten dengan ketersediaan sumber daya lahan.
+
+```{r pendahuluan-metodologi-note, echo=FALSE, message=FALSE, warning=FALSE}
+htmltools::tags$div(
+  style = paste0(
+    "padding: 12px 16px; background-color: #f8f9fa; ",
+    "border-left: 4px solid #17a2b8; border-radius: 4px; ",
+    "margin: 15px 0; font-size: 13px; color: #495057;"
+  ),
+  htmltools::tags$strong("Interpretasi: "),
+  paste0(
+    "Hasil proyeksi bergantung pada kualitas dan konsistensi data input ",
+    "(baseline, proyeksi lahan, dan file asumsi). Perbedaan hasil antar skenario ",
+    "mencerminkan dampak intervensi yang disimulasikan, bukan prediksi deterministik. ",
+    "Gunakan hasil ini sebagai alat bantu perencanaan, bukan sebagai target tunggal."
+  )
+)
 ```
 
 # Data Input {.tabset .tabset-pills}
@@ -272,24 +534,28 @@ if (!is.null(file_path_bau) && file.exists(as.character(file_path_bau))) {
   
   df_bau <- readxl::read_excel(file_path_bau, sheet = target_sheet)
   
-  # 1. Konversi otomatis kolom teks yang berisi angka menjadi numerik
   df_bau <- df_bau |>
-    dplyr::mutate(dplyr::across(everything(), ~ {
-      num_conv <- suppressWarnings(as.numeric(as.character(.)))
-      if (!all(is.na(num_conv) == is.na(.))) num_conv else .
-    }))
+  dplyr::mutate(dplyr::across(everything(), ~ {
+    # Coba konversi
+    num_conv <- suppressWarnings(as.numeric(as.character(.)))
+    
+    # Jumlah NA sebelum & sesudah konversi
+    n_na_before <- sum(is.na(.))
+    n_na_after  <- sum(is.na(num_conv))
+    
+    # Kalau tidak ada NA baru (semua nilai berhasil dikonversi),
+    # pakai numerik. Kalau ada NA baru (kolom berisi teks), tetap teks.
+    if (n_na_after <= n_na_before) num_conv else as.character(.)
+  }))
   
-  # 2. Identifikasi kolom numerik (kecualikan ID)
   all_num_cols <- names(df_bau)[sapply(df_bau, is.numeric)]
   num_cols_to_format <- setdiff(all_num_cols, c("ID", "id", "Id"))
   
-  # 3. Bulatkan nilai numerik ke 2 desimal di level dataframe
   if (length(num_cols_to_format) > 0) {
     df_bau <- df_bau |>
       dplyr::mutate(dplyr::across(dplyr::all_of(num_cols_to_format), ~ round(., 2)))
   }
   
-  # 4. Buat objek datatable
   dt <- DT::datatable(
     df_bau,
     rownames = FALSE,
@@ -303,10 +569,8 @@ if (!is.null(file_path_bau) && file.exists(as.character(file_path_bau))) {
     )
   )
   
-  # 5. Format tampilan 2 desimal & pemisah ribuan
   if (length(num_cols_to_format) > 0) {
-    dt <- dt |>
-      DT::formatRound(columns = num_cols_to_format, digits = 2, mark = ",")
+    dt <- dt |> DT::formatRound(columns = num_cols_to_format, digits = 2, mark = ",")
   }
   
   dt
@@ -315,96 +579,114 @@ if (!is.null(file_path_bau) && file.exists(as.character(file_path_bau))) {
 }
 ```
 
-## Asumsi 1: Perubahan Lahan
+```{r input-A1-A3-dynamic, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+# ============================================================
+# Render tab Asumsi 1/2/3 secara dinamis, hanya jika file valid
+# ============================================================
+# Helper: cek file valid
+is_valid_file <- function(path) {
+  !is.null(path) && length(path) > 0 &&
+    !is.na(path) && nzchar(as.character(path)) &&
+    file.exists(as.character(path))
+}
 
-```{r input-A1, echo=FALSE, message=FALSE, warning=FALSE}
-has_a1 <- "A1" %in% active_assumptions
+# Helper: render DataTable + tabel jadi HTML string
+render_dt_to_html <- function(dt_obj) {
+  html_file <- tempfile(fileext = ".html")
+  htmltools::save_html(dt_obj, file = html_file)
+  paste(readLines(html_file, warn = FALSE), collapse = "\n")
+}
+
+# Helper: buat DT dengan format numerik 2 desimal
+create_dt <- function(df, caption_text, exclude_cols = c("ID", "id", "Id")) {
+  # Konversi otomatis: hanya kolom yang SELURUH nilainya bisa jadi numerik
+  df <- df |>
+    dplyr::mutate(dplyr::across(everything(), ~ {
+      chr         <- as.character(.)
+      num_conv    <- suppressWarnings(as.numeric(chr))
+      n_na_before <- sum(is.na(chr))
+      n_na_after  <- sum(is.na(num_conv))
+      # Kalau tidak ada NA baru → semua nilai berhasil dikonversi → pakai numerik
+      if (n_na_after <= n_na_before) num_conv else chr
+    }))
+  
+  all_num_cols <- names(df)[sapply(df, is.numeric)]
+  num_cols     <- setdiff(all_num_cols, exclude_cols)
+  
+  if (length(num_cols) > 0) {
+    df <- df |>
+      dplyr::mutate(dplyr::across(dplyr::all_of(num_cols), ~ round(., 2)))
+  }
+  
+  dt <- DT::datatable(
+    df,
+    rownames = FALSE,
+    caption = caption_text,
+    extensions = "Buttons",
+    options = list(
+      pageLength = 10,
+      dom = "Bfrtip",
+      buttons = c("copy", "excel", "csv"),
+      scrollX = TRUE
+    )
+  )
+  
+  if (length(num_cols) > 0) {
+    dt <- dt |> DT::formatRound(columns = num_cols, digits = 2, mark = ",")
+  }
+  
+  list(dt = dt, num_cols = num_cols, df = df)
+}
+
+# ============================================================
+# ASUMSI 1: Perubahan Lahan
+# ============================================================
+has_a1       <- "A1" %in% active_assumptions
 file_path_a1 <- params$file_a1
 
-if (has_a1 && !is.null(file_path_a1) && file.exists(as.character(file_path_a1))) {
-  sheets <- readxl::excel_sheets(file_path_a1)
-  
-  # Helper function untuk membuat Data Table + format 2 desimal dinamis
-  create_dt <- function(df, caption_text) {
-    # 1. Konversi otomatis kolom teks yang berisi angka menjadi numerik
-    df <- df |>
-      dplyr::mutate(dplyr::across(everything(), ~ {
-        num_conv <- suppressWarnings(as.numeric(as.character(.)))
-        if (!all(is.na(num_conv) == is.na(.))) num_conv else .
-      }))
-    
-    # 2. Identifikasi kolom numerik (kecualikan ID)
-    all_num_cols <- names(df)[sapply(df, is.numeric)]
-    num_cols <- setdiff(all_num_cols, c("ID", "id", "Id"))
-    
-    # 3. Bulatkan ke 2 desimal di level dataframe
-    if (length(num_cols) > 0) {
-      df <- df |>
-        dplyr::mutate(dplyr::across(dplyr::all_of(num_cols), ~ round(., 2)))
-    }
-    
-    # 4. Buat objek datatable
-    dt <- DT::datatable(
-      df,
-      rownames = FALSE,
-      caption = caption_text,
-      extensions = "Buttons",
-      options = list(
-        pageLength = 10,
-        dom = "Bfrtip",
-        buttons = c("copy", "excel", "csv"),
-        scrollX = TRUE
-      )
-    )
-    
-    # 5. Format tampilan 2 desimal & pemisah ribuan
-    if (length(num_cols) > 0) {
-      dt <- dt |>
-        DT::formatRound(columns = num_cols, digits = 2, mark = ",")
-    }
-    
-    return(dt)
-  }
-  
-  # 1. Cek ketersediaan sheet
-  has_luc <- "luc_projection" %in% sheets
-  has_land <- "land_proportion" %in% sheets
-  
-  # 2. Baca sheet utama (luc_projection atau sheet pertama)
-  target_sheet <- if (has_luc) "luc_projection" else sheets[1]
-  df_a1 <- readxl::read_excel(file_path_a1, sheet = target_sheet)
-  dt_a1 <- create_dt(df_a1, paste0("Tabel Asumsi 1: Perubahan Luas Lahan (Sheet: ", target_sheet, ")"))
-  
-  # 3. Kondisi jika ada sheet land_proportion -> Tampilkan dalam Tabset
+if (has_a1 && is_valid_file(file_path_a1)) {
+  cat("\n\n## Asumsi 1: Perubahan Lahan\n\n")
+
+  sheets       <- readxl::excel_sheets(file_path_a1)
+  has_land     <- "land_proportion" %in% sheets
+  target_sheet <- if ("luc_projection" %in% sheets) "luc_projection" else sheets[1]
+
+  # --- Tabel 1: luc_projection ---
+  cat(paste0("\n\n### Tabel Luas Lahan (Sheet: ", target_sheet, ")\n\n"))
+
+  df_a1  <- readxl::read_excel(file_path_a1, sheet = target_sheet)
+  res_a1 <- create_dt(
+    df_a1,
+    paste0("Tabel Asumsi 1: Perubahan Luas Lahan (Sheet: ", target_sheet, ")")
+  )
+  cat(as.character(htmltools::tagList(res_a1$dt)))
+  cat("\n\n")
+
+  # --- Tabel 2: land_proportion (jika ada) ---
   if (has_land) {
-    df_land <- readxl::read_excel(file_path_a1, sheet = "land_proportion")
-    dt_land <- create_dt(df_land, "Tabel Asumsi 1: Proporsi Lahan (Sheet: land_proportion)")
-    
-    bslib::navset_card_tab(
-      bslib::nav_panel(title = paste0("Luas Lahan (", target_sheet, ")"), dt_a1),
-      bslib::nav_panel(title = "Proporsi Lahan (land_proportion)", dt_land)
+    cat("\n\n### Tabel Proporsi Lahan (Sheet: land_proportion)\n\n")
+
+    df_land  <- readxl::read_excel(file_path_a1, sheet = "land_proportion")
+    res_land <- create_dt(
+      df_land,
+      "Tabel Asumsi 1: Proporsi Lahan (Sheet: land_proportion)"
     )
-  } else {
-    # Jika hanya ada 1 sheet, tampilkan datatable biasa
-    dt_a1
+    cat(as.character(htmltools::tagList(res_land$dt)))
+    cat("\n\n")
   }
-} else if (has_a1) {
-  render_notice("Asumsi 1 diaktifkan, namun file input Asumsi 1 tidak ditemukan atau path tidak valid.")
-} else {
-  render_notice("Asumsi 1 (Perubahan Lahan) tidak diaktifkan pada skenario ini.")
 }
-```
 
-## Asumsi 2: Produktivitas LPC
-
-```{r input-A2, echo=FALSE, message=FALSE, warning=FALSE}
-has_a2 <- "A2" %in% active_assumptions
+# ============================================================
+# ASUMSI 2: Produktivitas LPC
+# ============================================================
+has_a2      <- "A2" %in% active_assumptions
 file_path_a2 <- params$file_a2
 
-if (has_a2 && !is.null(file_path_a2) && file.exists(as.character(file_path_a2))) {
+if (has_a2 && is_valid_file(file_path_a2)) {
+  cat("\n\n## Asumsi 2: Produktivitas LPC\n\n")
+  
   sheets <- readxl::excel_sheets(file_path_a2)
   
-  # Deteksi nama sheet dan penentuan skip_rows untuk melompati baris judul template
   if ("Skenario_LPC" %in% sheets) {
     target_sheet <- "Skenario_LPC"
     skip_rows <- 11
@@ -420,62 +702,27 @@ if (has_a2 && !is.null(file_path_a2) && file.exists(as.character(file_path_a2)))
   }
   
   df_a2 <- readxl::read_excel(file_path_a2, sheet = target_sheet, skip = skip_rows)
-  
-  # 1. Konversi otomatis kolom angka yang terbaca sebagai teks
-  df_a2 <- df_a2 |>
-    dplyr::mutate(dplyr::across(everything(), ~ {
-      num_conv <- suppressWarnings(as.numeric(as.character(.)))
-      if (!all(is.na(num_conv) == is.na(.))) num_conv else .
-    }))
-  
-  # 2. Identifikasi kolom numerik (kecualikan ID/Kode)
-  all_num_cols <- names(df_a2)[sapply(df_a2, is.numeric)]
-  num_cols_to_format <- setdiff(all_num_cols, c("ID", "id", "Id", "KODE", "Kode", "NO", "No"))
-  
-  # 3. Bulatkan nilai ke 2 desimal di level dataframe
-  if (length(num_cols_to_format) > 0) {
-    df_a2 <- df_a2 |>
-      dplyr::mutate(dplyr::across(dplyr::all_of(num_cols_to_format), ~ round(., 2)))
-  }
-  
-  # 4. Buat objek datatable
-  dt <- DT::datatable(
+  res_a2 <- create_dt(
     df_a2,
-    rownames = FALSE,
-    caption = paste0("Tabel Asumsi 2: Target Produktivitas LPC (Sheet: ", target_sheet, ")"),
-    extensions = "Buttons",
-    options = list(
-      pageLength = 10,
-      dom = "Bfrtip",
-      buttons = c("copy", "excel", "csv"),
-      scrollX = TRUE
-    )
+    paste0("Tabel Asumsi 2: Target Produktivitas LPC (Sheet: ", target_sheet, ")"),
+    exclude_cols = c("ID", "id", "Id", "KODE", "Kode", "NO", "No")
   )
   
-  # 5. Format tampilan 2 desimal & pemisah ribuan
-  if (length(num_cols_to_format) > 0) {
-    dt <- dt |>
-      DT::formatRound(columns = num_cols_to_format, digits = 2, mark = ",")
-  }
-  
-  dt
-} else if (has_a2) {
-  render_notice("Asumsi 2 diaktifkan, namun file input Asumsi 2 tidak ditemukan atau path tidak valid.")
-} else {
-  render_notice("Asumsi 2 (Peningkatan Produktivitas LPC) tidak diaktifkan pada skenario ini.")
+  cat(as.character(htmltools::tagList(res_a2$dt)))
+  cat("\n\n")
 }
-```
 
-## Asumsi 3: Hilirisasi
-
-```{r input-A3, echo=FALSE, message=FALSE, warning=FALSE}
-has_a3 <- "A3" %in% active_assumptions
+# ============================================================
+# ASUMSI 3: Hilirisasi
+# ============================================================
+has_a3      <- "A3" %in% active_assumptions
 file_path_a3 <- params$file_a3
 
-if (has_a3 && !is.null(file_path_a3) && file.exists(as.character(file_path_a3))) {
+if (has_a3 && is_valid_file(file_path_a3)) {
+  cat("\n\n## Asumsi 3: Hilirisasi\n\n")
+  
   sheets <- readxl::excel_sheets(file_path_a3)
   
-  # Deteksi nama sheet dan penentuan skip_rows
   if ("Restrukturisasi" %in% sheets) {
     target_sheet <- "Restrukturisasi"
     skip_rows <- 11
@@ -489,7 +736,6 @@ if (has_a3 && !is.null(file_path_a3) && file.exists(as.character(file_path_a3)))
   
   df_a3 <- readxl::read_excel(file_path_a3, sheet = target_sheet, skip = skip_rows)
   
-  # Filter & kerapihan teks secara aman (jika kolom sektor asal ditemukan)
   col_from <- names(df_a3)[grep("SEKTOR ASAL|FROM SECTOR", names(df_a3), ignore.case = TRUE)][1]
   col_to   <- names(df_a3)[grep("SEKTOR TUJUAN|TO SECTOR", names(df_a3), ignore.case = TRUE)][1]
   
@@ -503,7 +749,7 @@ if (has_a3 && !is.null(file_path_a3) && file.exists(as.character(file_path_a3)))
       dplyr::mutate(.data[[col_to]] := trimws(.data[[col_to]]))
   }
   
-  DT::datatable(
+  dt_a3 <- DT::datatable(
     df_a3,
     rownames = FALSE,
     caption = paste0("Tabel Asumsi 3: Restrukturisasi Tabel I-O (Sheet: ", target_sheet, ")"),
@@ -515,10 +761,22 @@ if (has_a3 && !is.null(file_path_a3) && file.exists(as.character(file_path_a3)))
       scrollX = TRUE
     )
   )
-} else if (has_a3) {
-  render_notice("Asumsi 3 diaktifkan, namun file input Asumsi 3 tidak ditemukan atau path tidak valid.")
-} else {
-  render_notice("Asumsi 3 (Hilirisasi / Restrukturisasi I-O) tidak diaktifkan pada skenario ini.")
+  
+  cat(as.character(htmltools::tagList(dt_a3)))
+  cat("\n\n")
+}
+
+# ============================================================
+# Fallback: jika tidak ada asumsi yang diaktifkan
+# ============================================================
+if (!(has_a1 && is_valid_file(file_path_a1)) &&
+    !(has_a2 && is_valid_file(file_path_a2)) &&
+    !(has_a3 && is_valid_file(file_path_a3))) {
+  cat("\n\n")
+  cat(as.character(htmltools::tagList(
+    render_notice("Tidak ada file Asumsi 1/2/3 yang diinput. Hanya Baseline BAU yang ditampilkan.")
+  )))
+  cat("\n\n")
 }
 ```
 
@@ -526,16 +784,61 @@ if (has_a3 && !is.null(file_path_a3) && file.exists(as.character(file_path_a3)))
 
 ```{r summary-table, echo=FALSE, warning=FALSE, message=FALSE}
 
+# ---- 0. Satuan tampilan: params$unit TANPA kata "Juta" ----
+satuan_dasar <- if (!is.null(params$unit) && nzchar(as.character(params$unit)) &&
+                    !is.na(params$unit) && params$unit != "NA") {
+  u <- as.character(params$unit)
+  trimws(gsub("\\s*Juta\\s*", " ", u, ignore.case = TRUE))
+} else {
+  "Rp"
+}
+
+# ---- 0b. Nama kolom dinamis: "Nilai <initial_year>" & "Nilai <end_year>" ----
+# Fallback ke "Nilai Awal"/"Nilai Akhir" jika tahun NA
+col_nilai_awal  <- if (!is.null(params$initial_year) && !is.na(params$initial_year)) {
+  paste0("Nilai ", params$initial_year)
+} else {
+  "Nilai Awal"
+}
+col_nilai_akhir <- if (!is.null(params$end_year) && !is.na(params$end_year)) {
+  paste0("Nilai ", params$end_year)
+} else {
+  "Nilai Akhir"
+}
+
 # ---- 1. Fungsi bantu: ringkasan per indikator ----
 summary_row <- function(df, col, label, unit) {
   d <- agg_by_year(df, col)
-  tibble::tibble(
+
+  nilai_awal  <- d$Total[1]
+  nilai_akhir <- d$Total[nrow(d)]
+  tahun_awal  <- d$YEAR[1]
+  tahun_akhir <- d$YEAR[nrow(d)]
+  n_year      <- max(1, tahun_akhir - tahun_awal)
+
+  # Buat tibble dengan nama kolom dinamis via setNames
+  out <- tibble::tibble(
     Indikator         = label,
     Satuan            = unit,
-    `Nilai Awal`      = d$Total[1],
-    `Nilai Akhir`     = d$Total[nrow(d)],
-    `Pertumbuhan (%)` = (d$Total[nrow(d)] / d$Total[1] - 1) * 100
+    nilai_awal_val    = nilai_awal,
+    nilai_akhir_val   = nilai_akhir,
+    n_tahun           = n_year,
+    `Pertumbuhan (%)` = dplyr::if_else(
+      is.na(nilai_awal) | nilai_awal == 0,
+      NA_real_,
+      (nilai_akhir / nilai_awal - 1) * 100
+    ),
+    `CAGR (%)`        = dplyr::if_else(
+      is.na(nilai_awal) | nilai_awal <= 0 | is.na(nilai_akhir) | n_year == 0,
+      NA_real_,
+      ((nilai_akhir / nilai_awal)^(1 / n_year) - 1) * 100
+    )
   )
+
+  # Rename kolom nilai_awal_val / nilai_akhir_val secara dinamis
+  names(out)[names(out) == "nilai_awal_val"]  <- col_nilai_awal
+  names(out)[names(out) == "nilai_akhir_val"] <- col_nilai_akhir
+  out
 }
 
 # ---- 2. Ringkasan BAU ----
@@ -545,62 +848,116 @@ sum_bau <- purrr::map2_dfr(
 ) |>
   dplyr::mutate(Skenario = "BAU")
 
-# ---- 3. Ringkasan Skenario ----
-sum_sc <- purrr::map2_dfr(
-  ind_cols, seq_along(ind_cols),
-  ~ summary_row(result_scenario, .x, ind_titles[.x], ind_units[.x])
-) |>
-  dplyr::mutate(Skenario = "Skenario")
+# ---- 3. Ringkasan Skenario (hanya jika ada) ----
+if (is_scenario) {
+  sum_sc <- purrr::map2_dfr(
+    ind_cols, seq_along(ind_cols),
+    ~ summary_row(result_scenario, .x, ind_titles[.x], ind_units[.x])
+  ) |>
+    dplyr::mutate(Skenario = "Skenario")
+  sum_all <- dplyr::bind_rows(sum_bau, sum_sc)
+} else {
+  sum_all <- sum_bau
+}
 
-# ---- 4. Gabungkan BAU + Skenario, urutkan per Indikator ----
-sum_all <- dplyr::bind_rows(sum_bau, sum_sc) |>
+# ---- 4. Gabungkan, urutkan, petakan satuan ----
+sum_all <- sum_all |>
   dplyr::mutate(
     Indikator = factor(Indikator, levels = ind_titles),
-    Skenario  = factor(Skenario, levels = c("BAU", "Skenario"))
+    Skenario  = factor(Skenario, levels = c("BAU", "Intervensi"))
   ) |>
   dplyr::arrange(Indikator, Skenario) |>
   dplyr::mutate(
     Indikator = as.character(Indikator),
     Skenario  = as.character(Skenario)
-  ) |>
-  # Urutan kolom: Indikator dulu, Skenario kedua
-  dplyr::select(
-    Indikator, Skenario, Satuan,
-    `Nilai Awal`, `Nilai Akhir`, `Pertumbuhan (%)`
   )
 
-# ---- 5. Tambahkan kolom bar Perbandingan ----
-# `Pertumbuhan (%)` masih dipakai untuk hitung bar_width & label,
-# lalu dihapus di akhir step ini.
-sum_all <- sum_all %>%
-  dplyr::group_by(Indikator) %>%
-  dplyr::mutate(
-    max_growth = max(`Pertumbuhan (%)`, na.rm = TRUE),
-    bar_width  = pmax(0, pmin(100, `Pertumbuhan (%)` / max_growth * 100)),
-    bar_color  = ifelse(Skenario == "BAU", "#4A90E2", "#F18F01"),
-    Pertumbuhan = sprintf(
-      '<div style="display:flex; align-items:center; gap:6px;">
-         <div style="flex:1; background:#eee; height:14px; border-radius:3px; overflow:hidden;">
-           <div style="width:%.1f%%; background:%s; height:100%%;"></div>
-         </div>
-         <span style="font-size:11px; color:#666; min-width:45px; text-align:right;">%.1f%%</span>
-       </div>',
-      bar_width, bar_color, `Pertumbuhan (%)`
-    )
-  ) %>%
-  dplyr::ungroup() %>%
-  # Hapus kolom Pertumbuhan (%) beserta kolom bantu
-  dplyr::select(-max_growth, -bar_width, -bar_color, -`Pertumbuhan (%)`)
+ind_label_to_col <- setNames(names(ind_titles), ind_titles)
+sum_all$Satuan <- ind_units[ind_label_to_col[sum_all$Indikator]]
 
-# ---- 6. Render tabel ----
+sum_all <- sum_all |>
+  dplyr::select(
+    Indikator, Skenario, Satuan,
+    dplyr::all_of(col_nilai_awal),
+    dplyr::all_of(col_nilai_akhir),
+    `Pertumbuhan (%)`, `CAGR (%)`, n_tahun
+  )
+
+# ---- 5. Bar "Pertumbuhan per Tahun" ----
+# Jika hanya BAU (1 baris per indikator), bar tetap ditampilkan
+# sebagai single-bar referensi; warnanya BAU (biru).
+if (is_scenario) {
+  sum_all <- sum_all %>%
+    dplyr::group_by(Indikator) %>%
+    dplyr::mutate(
+      max_cagr   = max(`CAGR (%)`, na.rm = TRUE),
+      bar_width  = dplyr::if_else(
+        is.na(max_cagr) | max_cagr == 0 | is.infinite(max_cagr), 0,
+        pmax(0, pmin(100, `CAGR (%)` / max_cagr * 100))
+      ),
+      bar_color  = ifelse(Skenario == "BAU", "#4A90E2", "#F18F01"),
+      `Pertumbuhan per Tahun` = sprintf(
+        '<div style="display:flex; align-items:center; gap:6px;">
+           <div style="flex:1; background:#eee; height:14px; border-radius:3px; overflow:hidden;">
+             <div style="width:%.1f%%; background:%s; height:100%%;"></div>
+           </div>
+           <span style="font-size:11px; color:#666; min-width:70px; text-align:right;">%.2f%%</span>
+         </div>',
+        bar_width, bar_color, dplyr::coalesce(`CAGR (%)`, 0)
+      )
+    ) %>%
+    dplyr::ungroup() %>%
+    dplyr::select(-max_cagr, -bar_width, -bar_color,
+                  -`Pertumbuhan (%)`, -`CAGR (%)`, -n_tahun)
+} else {
+  # Mode BAU-only: bar tunggal dengan warna netral
+  sum_all <- sum_all %>%
+    dplyr::mutate(
+      bar_width = 100,
+      `Pertumbuhan per Tahun` = sprintf(
+        '<div style="display:flex; align-items:center; gap:6px;">
+           <div style="flex:1; background:#eee; height:14px; border-radius:3px; overflow:hidden;">
+             <div style="width:%.1f%%; background:%s; height:100%%;"></div>
+           </div>
+           <span style="font-size:11px; color:#666; min-width:70px; text-align:right;">%.2f%%</span>
+         </div>',
+        bar_width, "#7f8c8d", dplyr::coalesce(`CAGR (%)`, 0)
+      )
+    ) %>%
+    dplyr::select(-`Pertumbuhan (%)`, -`CAGR (%)`, -n_tahun, -bar_width)
+}
+
+# Kolom Skenario dihapus jika tidak ada skenario
+if (!is_scenario) {
+  sum_all <- sum_all |> dplyr::select(-Skenario)
+}
+
+# ---- 6. Format nilai dengan format_uang() ----
+# Untuk indikator bersatuan uang: gunakan format_uang
+# Untuk LABOUR: format numerik biasa
+sum_disp <- sum_all |>
+  dplyr::mutate(
+    !!col_nilai_awal := dplyr::case_when(
+      Indikator == ind_titles[["INCOME_PER_CAPITA"]] ~
+        paste0(format_uang(.data[[col_nilai_awal]],  satuan_uang)),
+      Indikator %in% ind_titles[is_money(ind_cols)] ~
+        format_uang(.data[[col_nilai_awal]],  satuan_uang),
+      TRUE ~ formatC(.data[[col_nilai_awal]], format = "f", digits = 0, big.mark = ",")
+    ),
+    !!col_nilai_akhir := dplyr::case_when(
+      Indikator == ind_titles[["INCOME_PER_CAPITA"]] ~
+        paste0(format_uang(.data[[col_nilai_akhir]], satuan_uang)),
+      Indikator %in% ind_titles[is_money(ind_cols)] ~
+        format_uang(.data[[col_nilai_akhir]], satuan_uang),
+      TRUE ~ formatC(.data[[col_nilai_akhir]], format = "f", digits = 0, big.mark = ",")
+    )
+  )
+
+# ---- 7. Render tabel ----
 DT::datatable(
-  sum_all,
+  sum_disp,
   rownames   = FALSE,
-  caption    = paste0(
-    "Ringkasan Eksekutif: Nilai Awal (", params$initial_year,
-    ") vs Nilai Akhir (", params$end_year, ")"
-  ),
-  escape     = FALSE,          
+  escape     = FALSE,
   extensions = "Buttons",
   options    = list(
     pageLength = 15,
@@ -609,27 +966,32 @@ DT::datatable(
     scrollX    = TRUE,
     columnDefs = list(
       list(
-        targets = which(names(sum_all) == "Perbandingan") - 1,
-        width   = "180px"
+        targets = which(names(sum_disp) == "Pertumbuhan per Tahun") - 1,
+        width   = "200px"
       )
     )
   )
-) |>
-  DT::formatRound(c("Nilai Awal", "Nilai Akhir"), digits = 2, mark = ",")
+)
 ```
 
-# Perbandingan BAU vs Skenario
+```{r macro-heading, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+if (is_scenario) {
+  cat("\n\n# Proyeksi Nilai Indikator Makro Ekonomi\n\n")
+  cat("Bagian ini menyajikan rekapitulasi tabel dan grafik proyeksi untuk setiap indikator makroekonomi, membandingkan skenario intervensi dengan BAU. Setiap sub-bagian terdiri atas tabel rekapitulasi (BAU vs Skenario) dan grafik perbandingan interaktif.\n\n")
+} else {
+  cat("\n\n# Proyeksi Nilai Indikator Makro Ekonomi (BAU)\n\n")
+  cat("Bagian ini menyajikan rekapitulasi tabel dan grafik proyeksi BAU untuk setiap indikator makroekonomi. Setiap sub-bagian terdiri atas tabel rekapitulasi tahunan dan grafik proyeksi.\n\n")
+}
+```
 
-Bagian ini menyajikan rekapitulasi tabel dan grafik proyeksi untuk setiap indikator makroekonomi. Setiap sub-bagian terdiri atas tabel rekapitulasi (BAU vs Skenario) dan grafik perbandingan interaktif.
-
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
+```{r preload-indicator-vars, echo=FALSE, message=FALSE, warning=FALSE}
 for (col in ind_cols) {
   label <- ind_titles[[col]]
   unit  <- ind_units[[col]]
 }
 ```
 
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
+```{r set-indicator-vars, echo=FALSE, message=FALSE, warning=FALSE}
 col   <- ind_cols[1]
 label <- ind_titles[[col]]
 unit  <- ind_units[[col]]
@@ -637,177 +999,355 @@ unit  <- ind_units[[col]]
 
 ## `r ind_titles[[ind_cols[1]]]` {.tabset}
 
-### Tabel Rekapitulasi
-
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
-recap_tbl <- build_recap_table(ind_cols[1], ind_titles[[ind_cols[1]]])
-
-DT::datatable(
-  recap_tbl,
-  rownames   = FALSE,
-  caption    = paste0("Rekapitulasi ", ind_titles[[ind_cols[1]]], " (", ind_units[[ind_cols[1]]], ")"),
-  extensions = "Buttons",
-  options = list(
-    pageLength = 15,
-    dom        = "Bfrtip",
-    buttons    = c("copy", "excel", "csv"),
-    scrollX    = TRUE
-  )
-) |>
-  DT::formatRound(c("BAU", "Skenario"), digits = 2, mark = ",") |>
-  DT::formatRound("Selisih (%)", digits = 2)
-```
-
 ### Grafik Proyeksi
 
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
+```{r plot-gdp, echo=FALSE, message=FALSE, warning=FALSE}
 build_plot(ind_cols[1], ind_titles[[ind_cols[1]]])
+```
+
+### Tabel Rekapitulasi
+
+```{r recap-gdp, echo=FALSE, message=FALSE, warning=FALSE}
+recap_tbl <- build_recap_table(ind_cols[1], ind_titles[[ind_cols[1]]])
+
+if (is_money(ind_cols[1])) {
+  recap_tbl <- recap_tbl |>
+    dplyr::mutate(
+      BAU = format_uang(BAU, satuan_uang)
+    )
+  if (is_scenario) {
+    recap_tbl <- recap_tbl |>
+      dplyr::mutate(
+        Skenario = format_uang(Skenario, satuan_uang),
+        `Selisih (%)` = formatC(`Selisih (%)`, format = "f", digits = 2, big.mark = ",")
+      )
+  }
+}
+
+dt <- DT::datatable(
+  recap_tbl,
+  rownames   = FALSE,
+  caption    = paste0(
+    "Rekapitulasi ", ind_titles[[ind_cols[1]]],
+    " (", ind_units[[ind_cols[1]]], ")",
+    if (!is_scenario) " — BAU" else ""
+  ),
+  extensions = "Buttons",
+  options    = list(
+    pageLength = 15, dom = "Bfrtip",
+    buttons    = c("copy", "excel", "csv"), scrollX = TRUE
+  )
+)
+
+if (!is_money(ind_cols[1])) {
+  dt <- dt |> DT::formatRound("BAU", digits = 2, mark = ",")
+  if (is_scenario) {
+    dt <- dt |> DT::formatRound(c("Skenario", "Selisih (%)"), digits = 2, mark = ",")
+  }
+}
+dt
 ```
 
 ## `r ind_titles[[ind_cols[2]]]` {.tabset}
 
-### Tabel Rekapitulasi
-
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
-recap_tbl <- build_recap_table(ind_cols[2], ind_titles[[ind_cols[2]]])
-
-DT::datatable(
-  recap_tbl,
-  rownames   = FALSE,
-  caption    = paste0("Rekapitulasi ", ind_titles[[ind_cols[2]]], " (", ind_units[[ind_cols[2]]], ")"),
-  extensions = "Buttons",
-  options = list(
-    pageLength = 15,
-    dom        = "Bfrtip",
-    buttons    = c("copy", "excel", "csv"),
-    scrollX    = TRUE
-  )
-) |>
-  DT::formatRound(c("BAU", "Skenario"), digits = 2, mark = ",") |>
-  DT::formatRound("Selisih (%)", digits = 2)
-```
-
 ### Grafik Proyeksi
 
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
+```{r plot-labour, echo=FALSE, message=FALSE, warning=FALSE}
 build_plot(ind_cols[2], ind_titles[[ind_cols[2]]])
+```
+
+### Tabel Rekapitulasi
+
+```{r recap-labour, echo=FALSE, message=FALSE, warning=FALSE}
+recap_tbl <- build_recap_table(ind_cols[2], ind_titles[[ind_cols[2]]])
+
+dt <- DT::datatable(
+  recap_tbl,
+  rownames   = FALSE,
+  caption    = paste0(
+    "Rekapitulasi ", ind_titles[[ind_cols[2]]],
+    " (", ind_units[[ind_cols[2]]], ")",
+    if (!is_scenario) " — BAU" else ""
+  ),
+  extensions = "Buttons",
+  options    = list(
+    pageLength = 15, dom = "Bfrtip",
+    buttons    = c("copy", "excel", "csv"), scrollX = TRUE
+  )
+)
+
+if (!is_money(ind_cols[2])) {
+  dt <- dt |> DT::formatRound("BAU", digits = 2, mark = ",")
+  if (is_scenario) {
+    dt <- dt |> DT::formatRound(c("Skenario", "Selisih (%)"), digits = 2, mark = ",")
+  }
+}
+dt
 ```
 
 ## `r ind_titles[[ind_cols[3]]]` {.tabset}
 
-### Tabel Rekapitulasi
-
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
-recap_tbl <- build_recap_table(ind_cols[3], ind_titles[[ind_cols[3]]])
-
-DT::datatable(
-  recap_tbl,
-  rownames   = FALSE,
-  caption    = paste0("Rekapitulasi ", ind_titles[[ind_cols[3]]], " (", ind_units[[ind_cols[3]]], ")"),
-  extensions = "Buttons",
-  options = list(
-    pageLength = 15,
-    dom        = "Bfrtip",
-    buttons    = c("copy", "excel", "csv"),
-    scrollX    = TRUE
-  )
-) |>
-  DT::formatRound(c("BAU", "Skenario"), digits = 2, mark = ",") |>
-  DT::formatRound("Selisih (%)", digits = 2)
-```
-
 ### Grafik Proyeksi
 
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
+```{r plot-income, echo=FALSE, message=FALSE, warning=FALSE}
 build_plot(ind_cols[3], ind_titles[[ind_cols[3]]])
+```
+
+### Tabel Rekapitulasi
+
+```{r recap-income, echo=FALSE, message=FALSE, warning=FALSE}
+recap_tbl <- build_recap_table(ind_cols[3], ind_titles[[ind_cols[3]]])
+
+if (is_money(ind_cols[3])) {
+  recap_tbl <- recap_tbl |>
+    dplyr::mutate(
+      BAU = format_uang(BAU, satuan_uang)
+    )
+  if (is_scenario) {
+    recap_tbl <- recap_tbl |>
+      dplyr::mutate(
+        Skenario = format_uang(Skenario, satuan_uang),
+        `Selisih (%)` = formatC(`Selisih (%)`, format = "f", digits = 2, big.mark = ",")
+      )
+  }
+}
+
+dt <- DT::datatable(
+  recap_tbl,
+  rownames   = FALSE,
+  caption    = paste0(
+    "Rekapitulasi ", ind_titles[[ind_cols[3]]],
+    " (", ind_units[[ind_cols[3]]], ")",
+    if (!is_scenario) " — BAU" else ""
+  ),
+  extensions = "Buttons",
+  options    = list(
+    pageLength = 15, dom = "Bfrtip",
+    buttons    = c("copy", "excel", "csv"), scrollX = TRUE
+  )
+)
+
+if (!is_money(ind_cols[3])) {
+  dt <- dt |> DT::formatRound("BAU", digits = 2, mark = ",")
+  if (is_scenario) {
+    dt <- dt |> DT::formatRound(c("Skenario", "Selisih (%)"), digits = 2, mark = ",")
+  }
+}
+
+dt
 ```
 
 ## `r ind_titles[[ind_cols[4]]]` {.tabset}
 
-### Tabel Rekapitulasi
-
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
-recap_tbl <- build_recap_table(ind_cols[4], ind_titles[[ind_cols[4]]])
-
-DT::datatable(
-  recap_tbl,
-  rownames   = FALSE,
-  caption    = paste0("Rekapitulasi ", ind_titles[[ind_cols[4]]], " (", ind_units[[ind_cols[4]]], ")"),
-  extensions = "Buttons",
-  options = list(
-    pageLength = 15,
-    dom        = "Bfrtip",
-    buttons    = c("copy", "excel", "csv"),
-    scrollX    = TRUE
-  )
-) |>
-  DT::formatRound(c("BAU", "Skenario"), digits = 2, mark = ",") |>
-  DT::formatRound("Selisih (%)", digits = 2)
-```
-
 ### Grafik Proyeksi
 
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
-build_plot(ind_cols[4], ind_titles[[ind_cols[4]]])
+```{r plot-income-per-capita, echo=FALSE, message=FALSE, warning=FALSE}
+has_percap <- "INCOME_PER_CAPITA" %in% names(result_scenario) &&
+              any(!is.na(result_scenario$INCOME_PER_CAPITA))
+
+if (has_percap) {
+  build_plot(ind_cols[4], ind_titles[[ind_cols[4]]])
+} else {
+  htmltools::tags$div(
+    style = "padding: 12px 16px; background-color: #fff3cd; border-left: 4px solid #ffc107; border-radius: 4px; margin: 15px 0; font-size: 13px; color: #664d03;",
+    htmltools::tags$strong("Perhatian: "), 
+    "Data proyeksi penduduk tidak tersedia pada analisis ini. ",
+    "Indikator Pendapatan per Kapita tidak dapat dihitung. ",
+    "Unggah file proyeksi penduduk (kolom: Tahun, Populasi) lalu jalankan ulang analisis."
+  )
+}
+```
+
+### Tabel Rekapitulasi
+
+```{r recap-income-per-capita, echo=FALSE, message=FALSE, warning=FALSE}
+recap_tbl <- build_recap_table(ind_cols[4], ind_titles[[ind_cols[4]]])
+
+if (is_money(ind_cols[4])) {
+  recap_tbl <- recap_tbl |>
+    dplyr::mutate(
+      BAU = format_uang(BAU, satuan_uang)
+    )
+  if (is_scenario) {
+    recap_tbl <- recap_tbl |>
+      dplyr::mutate(
+        Skenario = format_uang(Skenario, satuan_uang),
+        `Selisih (%)` = formatC(`Selisih (%)`, format = "f", digits = 2, big.mark = ",")
+      )
+  }
+}
+
+dt <- DT::datatable(
+  recap_tbl,
+  rownames   = FALSE,
+  caption    = paste0(
+    "Rekapitulasi ", ind_titles[[ind_cols[4]]],
+    " (", ind_units[[ind_cols[4]]], ")",
+    if (!is_scenario) " — BAU" else ""
+  ),
+  extensions = "Buttons",
+  options    = list(
+    pageLength = 15, dom = "Bfrtip",
+    buttons    = c("copy", "excel", "csv"), scrollX = TRUE
+  )
+)
+
+if (!is_money(ind_cols[4])) {
+  dt <- dt |> DT::formatRound("BAU", digits = 2, mark = ",")
+  if (is_scenario) {
+    dt <- dt |> DT::formatRound(c("Skenario", "Selisih (%)"), digits = 2, mark = ",")
+  }
+}
+
+dt
 ```
 
 ## `r ind_titles[[ind_cols[5]]]` {.tabset}
 
+### Grafik Proyeksi
+
+```{r plot-surplus, echo=FALSE, message=FALSE, warning=FALSE}
+build_plot(ind_cols[5], ind_titles[[ind_cols[5]]])
+```
+
 ### Tabel Rekapitulasi
 
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
+```{r recap-surplus, echo=FALSE, message=FALSE, warning=FALSE}
 recap_tbl <- build_recap_table(ind_cols[5], ind_titles[[ind_cols[5]]])
 
-DT::datatable(
+if (is_money(ind_cols[5])) {
+  recap_tbl <- recap_tbl |>
+    dplyr::mutate(
+      BAU = format_uang(BAU, satuan_uang)
+    )
+  if (is_scenario) {
+    recap_tbl <- recap_tbl |>
+      dplyr::mutate(
+        Skenario = format_uang(Skenario, satuan_uang),
+        `Selisih (%)` = formatC(`Selisih (%)`, format = "f", digits = 2, big.mark = ",")
+      )
+  }
+}
+
+dt <- DT::datatable(
   recap_tbl,
   rownames   = FALSE,
-  caption    = paste0("Rekapitulasi ", ind_titles[[ind_cols[5]]], " (", ind_units[[ind_cols[5]]], ")"),
+  caption    = paste0(
+    "Rekapitulasi ", ind_titles[[ind_cols[5]]],
+    " (", ind_units[[ind_cols[5]]], ")",
+    if (!is_scenario) " — BAU" else ""
+  ),
   extensions = "Buttons",
-  options = list(
-    pageLength = 15,
-    dom        = "Bfrtip",
-    buttons    = c("copy", "excel", "csv"),
-    scrollX    = TRUE
+  options    = list(
+    pageLength = 15, dom = "Bfrtip",
+    buttons    = c("copy", "excel", "csv"), scrollX = TRUE
   )
-) |>
-  DT::formatRound(c("BAU", "Skenario"), digits = 2, mark = ",") |>
-  DT::formatRound("Selisih (%)", digits = 2)
+)
+
+if (!is_money(ind_cols[5])) {
+  dt <- dt |> DT::formatRound("BAU", digits = 2, mark = ",")
+  if (is_scenario) {
+    dt <- dt |> DT::formatRound(c("Skenario", "Selisih (%)"), digits = 2, mark = ",")
+  }
+}
+dt
 ```
+
+## `r ind_titles[[ind_cols[6]]]` {.tabset}
 
 ### Grafik Proyeksi
 
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
-build_plot(ind_cols[5], ind_titles[[ind_cols[5]]])
+```{r plot-output, echo=FALSE, message=FALSE, warning=FALSE}
+build_plot(ind_cols[6], ind_titles[[ind_cols[6]]])
+```
+
+### Tabel Rekapitulasi
+
+```{r recap-output, echo=FALSE, message=FALSE, warning=FALSE}
+recap_tbl <- build_recap_table(ind_cols[6], ind_titles[[ind_cols[6]]])
+
+if (is_money(ind_cols[6])) {
+  recap_tbl <- recap_tbl |>
+    dplyr::mutate(
+      BAU = format_uang(BAU, satuan_uang)
+    )
+  if (is_scenario) {
+    recap_tbl <- recap_tbl |>
+      dplyr::mutate(
+        Skenario = format_uang(Skenario, satuan_uang),
+        `Selisih (%)` = formatC(`Selisih (%)`, format = "f", digits = 2, big.mark = ",")
+      )
+  }
+}
+
+dt <- DT::datatable(
+  recap_tbl,
+  rownames   = FALSE,
+  caption    = paste0(
+    "Rekapitulasi ", ind_titles[[ind_cols[6]]],
+    " (", ind_units[[ind_cols[6]]], ")",
+    if (!is_scenario) " — BAU" else ""
+  ),
+  extensions = "Buttons",
+  options    = list(
+    pageLength = 15, dom = "Bfrtip",
+    buttons    = c("copy", "excel", "csv"), scrollX = TRUE
+  )
+)
+
+if (!is_money(ind_cols[6])) {
+  dt <- dt |> DT::formatRound("BAU", digits = 2, mark = ",")
+  if (is_scenario) {
+    dt <- dt |> DT::formatRound(c("Skenario", "Selisih (%)"), digits = 2, mark = ",")
+  }
+}
+dt
 ```
 
 # Analisis Sektoral {.tabset}
 
 ## PDRB per Sektor
 
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
+```{r sector-pdrb, echo=FALSE, message=FALSE, warning=FALSE}
+pdrb_awal_col  <- paste0("PDRB ", params$initial_year, " (", satuan_uang, ")")
+pdrb_akhir_col <- paste0("PDRB ", params$end_year,     " (", satuan_uang, ")")
+
 sector_summary <- result_scenario |>
   dplyr::group_by(SECTOR) |>
   dplyr::summarise(
     GDP_Awal  = GDP[YEAR == min(YEAR)],
     GDP_Akhir = GDP[YEAR == max(YEAR)],
+    Tahun_Awal  = min(YEAR),
+    Tahun_Akhir = max(YEAR),
     .groups = "drop"
   ) |>
   dplyr::mutate(
-    Pertumbuhan_Pct = (GDP_Akhir / GDP_Awal - 1) * 100
+    n_tahun = pmax(1, Tahun_Akhir - Tahun_Awal),
+    `Pertumbuhan (%)` = dplyr::if_else(
+      is.na(GDP_Awal) | GDP_Awal <= 0 | is.na(GDP_Akhir),
+      NA_real_,
+      ((GDP_Akhir / GDP_Awal)^(1 / n_tahun) - 1) * 100
+    )
   ) |>
-  dplyr::arrange(dplyr::desc(GDP_Akhir)) |>
+  dplyr::arrange(dplyr::desc(`Pertumbuhan (%)`)) |>
   dplyr::rename(
     `Sektor`                        = SECTOR,
-    `PDRB Awal (Rp Juta)`           = GDP_Awal,
-    `PDRB Akhir (Rp Juta)`          = GDP_Akhir,
-    `Pertumbuhan (%)`               = Pertumbuhan_Pct
-  )
+    !!pdrb_awal_col                 := GDP_Awal,
+    !!pdrb_akhir_col                := GDP_Akhir
+  ) |>
+  dplyr::select(-Tahun_Awal, -Tahun_Akhir, -n_tahun)
 
-top20 <- head(sector_summary, 20)
+top20 <- head(sector_summary, 20) |>
+  dplyr::mutate(
+    !!pdrb_awal_col  := format_uang(.data[[pdrb_awal_col]],  satuan_uang),
+    !!pdrb_akhir_col := format_uang(.data[[pdrb_akhir_col]], satuan_uang)
+  ) |>
+  add_growth_bar(color = "#4A90E2")
 
 DT::datatable(
   top20,
   rownames   = FALSE,
+  escape     = FALSE,
   caption    = paste0(
     "Top 20 Sektor berdasarkan PDRB Akhir (Skenario) — ",
     params$initial_year, " s.d. ", params$end_year
@@ -817,41 +1357,62 @@ DT::datatable(
     pageLength = 20,
     dom        = "Bfrtip",
     buttons    = c("copy", "excel", "csv"),
-    scrollX    = TRUE
+    scrollX    = TRUE,
+    columnDefs = list(
+      list(
+        targets = which(names(top20) == "Pertumbuhan per Tahun") - 1,
+        width   = "200px"
+      )
+    )
   )
-) |>
-  DT::formatRound(c("PDRB Awal (Rp Juta)", "PDRB Akhir (Rp Juta)"),
-                  digits = 2, mark = ",") |>
-  DT::formatRound("Pertumbuhan (%)", digits = 2)
+)
 ```
 
 ## Serapan Tenaga Kerja per Sektor
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
+```{r sector-labour, echo=FALSE, message=FALSE, warning=FALSE}
+lab_awal_col  <- paste0("Serapan TK ", params$initial_year, " (Orang)")
+lab_akhir_col <- paste0("Serapan TK ", params$end_year,     " (Orang)")
+
 lab_summary <- result_scenario |>
   dplyr::group_by(SECTOR) |>
   dplyr::summarise(
     TK_Awal  = LABOUR[YEAR == min(YEAR)],
     TK_Akhir = LABOUR[YEAR == max(YEAR)],
+    Tahun_Awal  = min(YEAR),
+    Tahun_Akhir = max(YEAR),
     .groups = "drop"
   ) |>
   dplyr::mutate(
-    Pertumbuhan_Pct = (TK_Akhir / TK_Awal - 1) * 100
+    n_tahun = pmax(1, Tahun_Akhir - Tahun_Awal),
+    `Pertumbuhan (%)` = dplyr::if_else(
+      is.na(TK_Awal) | TK_Awal <= 0 | is.na(TK_Akhir),
+      NA_real_,
+      ((TK_Akhir / TK_Awal)^(1 / n_tahun) - 1) * 100
+    )
   ) |>
-  dplyr::arrange(dplyr::desc(TK_Akhir)) |>
+  dplyr::arrange(dplyr::desc(`Pertumbuhan (%)`)) |>
   dplyr::rename(
-    `Sektor`                          = SECTOR,
-    `Serapan TK Awal (Orang)`         = TK_Awal,
-    `Serapan TK Akhir (Orang)`        = TK_Akhir,
-    `Pertumbuhan (%)`                 = Pertumbuhan_Pct
-  )
+    `Sektor`            = SECTOR,
+    !!lab_awal_col      := TK_Awal,
+    !!lab_akhir_col     := TK_Akhir
+  ) |>
+  dplyr::select(-Tahun_Awal, -Tahun_Akhir, -n_tahun)
 
-top20_lab <- head(lab_summary, 20)
+top20_lab <- head(lab_summary, 20) |>
+  dplyr::mutate(
+    !!lab_awal_col  := formatC(.data[[lab_awal_col]],
+                                format = "f", digits = 0, big.mark = ","),
+    !!lab_akhir_col := formatC(.data[[lab_akhir_col]],
+                                format = "f", digits = 0, big.mark = ",")
+  ) |>
+  add_growth_bar(color = "#27ae60")
 
 DT::datatable(
   top20_lab,
   rownames   = FALSE,
+  escape     = FALSE,
   caption    = paste0(
-    "Top 20 Sektor berdasarkan Serapan Tenaga Kerja Akhir — ",
+    "Top 20 Sektor berdasarkan Serapan Tenaga Kerja ", params$end_year, " — ",
     params$initial_year, " s.d. ", params$end_year
   ),
   extensions = "Buttons",
@@ -859,39 +1420,58 @@ DT::datatable(
     pageLength = 20,
     dom        = "Bfrtip",
     buttons    = c("copy", "excel", "csv"),
-    scrollX    = TRUE
+    scrollX    = TRUE,
+    columnDefs = list(
+      list(
+        targets = which(names(top20_lab) == "Pertumbuhan per Tahun") - 1,
+        width   = "200px"
+      )
+    )
   )
-) |>
-  DT::formatRound(c("Serapan TK Awal (Orang)", "Serapan TK Akhir (Orang)"),
-                  digits = 0, mark = ",") |>
-  DT::formatRound("Pertumbuhan (%)", digits = 2)
+)
 ```
 
 ## Output per Sektor
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
+```{r sector-output, echo=FALSE, message=FALSE, warning=FALSE}
+out_awal_col  <- paste0("Output ", params$initial_year, " (", satuan_uang, ")")
+out_akhir_col <- paste0("Output ", params$end_year,     " (", satuan_uang, ")")
+
 out_summary <- result_scenario |>
   dplyr::group_by(SECTOR) |>
   dplyr::summarise(
     Output_Awal  = OUTPUT[YEAR == min(YEAR)],
     Output_Akhir = OUTPUT[YEAR == max(YEAR)],
+    Tahun_Awal  = min(YEAR),
+    Tahun_Akhir = max(YEAR),
     .groups = "drop"
   ) |>
   dplyr::mutate(
-    Pertumbuhan_Pct = (Output_Akhir / Output_Awal - 1) * 100
+    n_tahun = pmax(1, Tahun_Akhir - Tahun_Awal),
+    `Pertumbuhan (%)` = dplyr::if_else(
+      is.na(Output_Awal) | Output_Awal <= 0 | is.na(Output_Akhir),
+      NA_real_,
+      ((Output_Akhir / Output_Awal)^(1 / n_tahun) - 1) * 100
+    )
   ) |>
-  dplyr::arrange(dplyr::desc(Output_Akhir)) |>
+  dplyr::arrange(dplyr::desc(`Pertumbuhan (%)`)) |>
   dplyr::rename(
     `Sektor`                        = SECTOR,
-    `Output Awal (Rp Juta)`         = Output_Awal,
-    `Output Akhir (Rp Juta)`        = Output_Akhir,
-    `Pertumbuhan (%)`               = Pertumbuhan_Pct
-  )
+    !!out_awal_col                  := Output_Awal,
+    !!out_akhir_col                 := Output_Akhir
+  ) |>
+  dplyr::select(-Tahun_Awal, -Tahun_Akhir, -n_tahun)
 
-top20_out <- head(out_summary, 20)
+top20_out <- head(out_summary, 20) |>
+  dplyr::mutate(
+    !!out_awal_col  := format_uang(.data[[out_awal_col]],  satuan_uang),
+    !!out_akhir_col := format_uang(.data[[out_akhir_col]], satuan_uang)
+  ) |>
+  add_growth_bar(color = "#8e44ad")
 
 DT::datatable(
   top20_out,
   rownames   = FALSE,
+  escape     = FALSE,
   caption    = paste0(
     "Top 20 Sektor berdasarkan Output Akhir — ",
     params$initial_year, " s.d. ", params$end_year
@@ -901,15 +1481,18 @@ DT::datatable(
     pageLength = 20,
     dom        = "Bfrtip",
     buttons    = c("copy", "excel", "csv"),
-    scrollX    = TRUE
+    scrollX    = TRUE,
+    columnDefs = list(
+      list(
+        targets = which(names(top20_out) == "Pertumbuhan per Tahun") - 1,
+        width   = "200px"
+      )
+    )
   )
-) |>
-  DT::formatRound(c("Output Awal (Rp Juta)", "Output Akhir (Rp Juta)"),
-                  digits = 2, mark = ",") |>
-  DT::formatRound("Pertumbuhan (%)", digits = 2)
+)
 ```
 
-```{r, linkage-a3, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+```{r linkage-a3, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
 has_a3 <- "A3" %in% active_assumptions
 lk     <- params$linkage_compare
 
@@ -1004,5 +1587,7 @@ if (has_a3 && data_ok) {
   cat("Indeks Total Backward Linkage (ITBL) menunjukkan seberapa besar suatu sektor menyerap input dari sektor lain, sedangkan Indeks Total Forward Linkage (ITFL) menunjukkan seberapa besar output suatu sektor dipakai sebagai input oleh sektor lain. Indeks di atas 1 berarti keterkaitan sektor tersebut di atas rata-rata seluruh sektor. Perubahan positif (ΔITBL atau ΔITFL > 0) berarti keterkaitan sektor menguat setelah restrukturisasi tabel I-O, perubahan negatif berarti melemah.\n\n")
 }
 ```
+
+# Referensi
 
 <font size="1"> LUMENS adalah perangkat lunak bebas dan disediakan TANPA JAMINAN APAPUN. Pengguna bertanggung jawab atas hasil yang dihasilkan. Hasil bergantung pada kualitas data input ("garbage in, garbage out") dan dapat bervariasi atau sensitif terhadap parameter yang digunakan. </font>
