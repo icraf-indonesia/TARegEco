@@ -746,29 +746,54 @@ run_projection_scenario <- function(
     message(sprintf("  ✓ RAS iterations=%d, max diff=%.3e",
                     sc_io_system$ras_iterations, sc_io_system$ras_diff))
     
-    # New Leontief inverse (L_new) from RAS; fallback compute from A_new
-    L_new <- sc_io_system$L_new
-    if (is.null(L_new)) L_new <- solve(diag(n) - sc_io_system$A_new)
+    # ==========================================================
+    # GUARD: Cek apakah RAS gagal konvergen / menghasilkan NaN
+    # ==========================================================
+    is_ras_failed <- is.na(sc_io_system$ras_diff) || 
+      !is.finite(sc_io_system$ras_diff) || 
+      sc_io_system$ras_diff > 1e3
     
-    # "After" linkage: computed directly from L_new
-    link_after <- compute_linkage_index(L_new, sektor_names)
-    
-    # Override IO system parameters
-    A_full      <- sc_io_system$A_new
-    M_full      <- diag(n) - A_full
-    B_full      <- L_new
-    v_c         <- sc_io_system$v_c_new
-    w_c         <- sc_io_system$w_c_new
-    l_c         <- sc_io_system$l_c_new
-    Y_0         <- sc_io_system$Y_new
-    x_0         <- sc_io_system$X_new
-    ITBL_vector <- link_after$itbl
-    ITFL_vector <- link_after$itfl
-    
-    # Diagnostics: did linkage actually change?
-    d_itbl <- max(abs(link_after$itbl - link_before$itbl))
-    d_itfl <- max(abs(link_after$itfl - link_before$itfl))
-    message(sprintf("  ✓ max|dITBL|=%.4g, max|dITFL|=%.4g", d_itbl, d_itfl))
+    if (is_ras_failed) {
+      warning(
+        "\n[RAS GAGAL] Target Output (ΔX) atau Transaksi (ΔZ) di file Asumsi 3 terlalu besar ",
+        "dibandingkan baseline (max diff = ", sc_io_system$ras_diff, "). ",
+        "Mengabaikan Asumsi 3 dan menggunakan tabel I-O baseline."
+      )
+      
+      # Fallback: Jangan pakai hasil RAS, kembalikan ke baseline
+      use_a3 <- FALSE
+      active_assumptions <- setdiff(active_assumptions, "A3")
+      
+      L_new <- NULL
+      link_after <- link_before
+      
+      A_full      <- sweep(Z, 2, x_0, "/")
+      M_full      <- diag(n) - A_full
+      B_full      <- solve(M_full)
+      # v_c, w_c, l_c, Y_0, x_0, ITBL, ITFL dibiarkan menggunakan nilai baseline
+      
+    } else {
+      # Jika RAS berhasil, lanjutkan seperti biasa
+      L_new <- sc_io_system$L_new
+      if (is.null(L_new)) L_new <- solve(diag(n) - sc_io_system$A_new)
+      
+      link_after <- compute_linkage_index(L_new, sektor_names)
+      
+      A_full      <- sc_io_system$A_new
+      M_full      <- diag(n) - A_full
+      B_full      <- L_new
+      v_c         <- sc_io_system$v_c_new
+      w_c         <- sc_io_system$w_c_new
+      l_c         <- sc_io_system$l_c_new
+      Y_0         <- sc_io_system$Y_new
+      x_0         <- sc_io_system$X_new
+      ITBL_vector <- link_after$itbl
+      ITFL_vector <- link_after$itfl
+      
+      d_itbl <- max(abs(link_after$itbl - link_before$itbl), na.rm = TRUE)
+      d_itfl <- max(abs(link_after$itfl - link_before$itfl), na.rm = TRUE)
+      message(sprintf("  ✓ max|dITBL|=%.4g, max|dITFL|=%.4g", d_itbl, d_itfl))
+    }
     
     if (max(d_itbl, d_itfl) < 1e-8) {
       warning(

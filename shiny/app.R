@@ -269,6 +269,42 @@ ui <- fluidPage(
         value = FALSE
       ),
       
+      tags$div(
+        class = "alert alert-info",
+        style = "font-size: 12px; margin-top: 5px; padding: 8px;",
+        tags$details(
+          tags$summary(
+            style = "cursor: pointer; font-weight: 600;",
+            "ℹ️ Apa itu RDS?"
+          ),
+          tags$ul(
+            style = "margin-top: 6px; padding-left: 18px;",
+            tags$li(
+              tags$br(),
+              tags$b("Apa itu RDS?"),
+              tags$br(),
+              "RDS (", tags$code(".rds"), ") adalah format file dari R (R Data Serialized) yang menyimpan ",
+              "objek hasil olahan data dalam bentuk terkompresi. File ini mempercepat ",
+              "proses karena semua input (tabel IO, tenaga kerja, lahan, dll.) ",
+              "sudah dibaca dan divalidasi sebelumnya."
+            ),
+            tags$li(
+              tags$b("Darimana?"),
+              tags$br(),
+              " File ", tags$code("descriptive_input_preprocessing.rds"),
+              " dihasilkan otomatis setiap kali Anda menjalankan analisis deskriptif ",
+              "dengan input Excel. Cek folder output yang Anda pilih pada langkah sebelumnya."
+            ),
+            tags$li(
+              tags$b("Kapan dipakai?"),
+              tags$br(),
+              " Saat mengulang analisis atau melanjutkan ke modul proyeksi ",
+              "tanpa ingin mengunggah ulang file Excel."
+            )
+          )
+        )
+      ),
+      
       conditionalPanel(
         condition = "input.load_rds == false",
         fileInput(
@@ -298,7 +334,7 @@ ui <- fluidPage(
       
       fileInput(
         "population_file",
-        "Proyeksi Jumlah Penduduk (.xlsx/.csv) (opsional)",
+        "Proyeksi Jumlah Penduduk (.xlsx/.csv) (wajib)",
         accept = c(".xlsx", ".xls", ".csv"),
         placeholder = "Pilih file dengan kolom: Tahun, Populasi"
       ),

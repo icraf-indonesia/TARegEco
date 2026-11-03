@@ -70,6 +70,7 @@ active_assumptions <- params$assumption_active
 
 # ---- Flag: apakah ada skenario (A1/A2/A3) atau hanya BAU? ----
 is_scenario <- any(c("A1", "A2", "A3") %in% active_assumptions)
+data_sektoral <- if (is_scenario && !is.null(result_scenario)) result_scenario else result_bau
 
 # Satuan Rupiah mengikuti params$unit
 satuan_uang <- if (!is.null(params$unit) && nzchar(as.character(params$unit)) && 
@@ -168,14 +169,14 @@ build_recap_table <- function(col, label) {
     return(b |> dplyr::rename(Tahun = YEAR))
   }
 
-  s <- agg_by_year(result_scenario, col) |> dplyr::rename(Skenario = Total)
+  s <- agg_by_year(result_scenario, col) |> dplyr::rename(Intervensi = Total)
 
   dplyr::left_join(b, s, by = "YEAR") |>
     dplyr::mutate(
       Selisih_Pct = dplyr::if_else(
-        is.na(BAU) | is.na(Skenario) | BAU == 0,
+        is.na(BAU) | is.na(Intervensi) | BAU == 0,
         NA_real_,
-        (Skenario / BAU - 1) * 100
+        (Intervensi / BAU - 1) * 100
       )
     ) |>
     dplyr::rename(
@@ -394,7 +395,11 @@ analysis_log_full %>%
 
 # Pendahuluan
 
-Laporan ini menyajikan hasil proyeksi ekonomi regional dengan skenario intervensi. Proyeksi dilakukan menggunakan model **Supply-Constrained Mixed Input-Output** (Hubacek & Sun, 2001) yang menggabungkan tabel Input-Output regional dengan batasan kapasitas lahan untuk menghasilkan estimasi indikator makroekonomi yang konsisten. 
+Laporan ini menyajikan hasil proyeksi ekonomi regional untuk Bukecap dengan skenario Skenario GGP. Analisis menggunakan model Supply-Constrained Mixed Input-Output (Hubacek & Sun, 2001) untuk memproyeksikan indikator makroekonomi regional pada periode 2025–2045. Untuk mengestimasi dampak ekonomi dari skenario perubahan tutupan lahan spasial terhadap PDRB regional, penelitian ini menerapkan pendekatan Land-Extended Input-Output (LEIO) yang dikombinasikan dengan Mixed Endogenous-Exogenous Input-Output Model (Miller & Blair, 2009). Kerangka kerja hubungan antara koefisien penggunaan lahan fisik dan transaksi moneter mengacu pada metode Land Requirement Coefficient yang dikembangkan oleh Hubacek & Sun (2001) dan Hubacek & Vazquez (2002).
+
+Mengingat output sektor berbasis lahan dibatasi secara fisik oleh kapasitas tutupan lahannya, perubahan output sektor tersebut (ditransformasikan dari perkalian perubahan luas lahan dengan produktivitas lahan . Untuk menghindari estimasi ganda (overestimation) pada matriks Kebalikan Leontief, status output sektor lahan dijajarkan secara eksogen mengikuti formulasi Mixed I-O (Papadas & Dahl, 1999; Miller & Blair, 2009), sedangkan estimasi PDRB sektor non-lahan dihitung secara terintegrasi.
+
+## Profil Data
 
 Tabel berikut merangkum profil analisis yang digunakan dalam laporan ini.
 
@@ -490,7 +495,7 @@ asumsi_df |>
 
 ## Catatan Metodologi
 
-Laporan ini menyajikan hasil proyeksi ekonomi regional menggunakan model **Supply-Constrained Mixed Input-Output** (Hubacek & Sun, 2001). Model ini menggabungkan tabel Input-Output regional dengan **batasan kapasitas lahan** — perubahan tutupan lahan (Asumsi 1), peningkatan produktivitas lahan (Asumsi 2), dan restrukturisasi struktur ekonomi (Asumsi 3) — untuk menghasilkan proyeksi indikator makroekonomi yang konsisten dengan ketersediaan sumber daya lahan.
+Laporan ini menyajikan hasil proyeksi ekonomi regional menggunakan model Supply-Constrained Mixed Input-Output (Hubacek & Sun, 2001). Model ini menggabungkan tabel Input-Output regional dengan batasan kapasitas lahan — perubahan tutupan lahan (Asumsi 1), peningkatan produktivitas lahan (Asumsi 2), dan restrukturisasi struktur ekonomi (Asumsi 3) — untuk menghasilkan proyeksi indikator makroekonomi yang konsisten dengan ketersediaan sumber daya lahan.
 
 ```{r pendahuluan-metodologi-note, echo=FALSE, message=FALSE, warning=FALSE}
 htmltools::tags$div(
@@ -598,26 +603,38 @@ render_dt_to_html <- function(dt_obj) {
 }
 
 # Helper: buat DT dengan format numerik 2 desimal
-create_dt <- function(df, caption_text, exclude_cols = c("ID", "id", "Id")) {
-  # Konversi otomatis: hanya kolom yang SELURUH nilainya bisa jadi numerik
+create_dt <- function(df, caption_text, exclude_cols = c("ID", "id", "Id"), percent_cols = NULL) {
+  # 1. Konversi teks ke numerik jika memungkinkan
   df <- df |>
     dplyr::mutate(dplyr::across(everything(), ~ {
       chr         <- as.character(.)
       num_conv    <- suppressWarnings(as.numeric(chr))
       n_na_before <- sum(is.na(chr))
       n_na_after  <- sum(is.na(num_conv))
-      # Kalau tidak ada NA baru → semua nilai berhasil dikonversi → pakai numerik
       if (n_na_after <= n_na_before) num_conv else chr
     }))
   
   all_num_cols <- names(df)[sapply(df, is.numeric)]
   num_cols     <- setdiff(all_num_cols, exclude_cols)
   
+  # 2. Format kolom persentase (kalikan 100 dan tambahkan %)
+  if (!is.null(percent_cols)) {
+    for (col in percent_cols) {
+      if (col %in% names(df)) {
+        df[[col]] <- paste0(round(df[[col]] * 100, 2), "%")
+        # Hapus dari num_cols agar tidak diformat ulang oleh DT::formatRound
+        num_cols <- setdiff(num_cols, col)
+      }
+    }
+  }
+  
+  # 3. Bulatkan kolom numerik biasa
   if (length(num_cols) > 0) {
     df <- df |>
       dplyr::mutate(dplyr::across(dplyr::all_of(num_cols), ~ round(., 2)))
   }
   
+  # 4. Buat DT
   dt <- DT::datatable(
     df,
     rownames = FALSE,
@@ -702,10 +719,15 @@ if (has_a2 && is_valid_file(file_path_a2)) {
   }
   
   df_a2 <- readxl::read_excel(file_path_a2, sheet = target_sheet, skip = skip_rows)
+  
+  # Cari nama kolom yang mengandung kata "GROWTH" atau "%"
+  pct_cols <- grep("GROWTH|%|PERSEN", names(df_a2), ignore.case = TRUE, value = TRUE)
+  
   res_a2 <- create_dt(
     df_a2,
     paste0("Tabel Asumsi 2: Target Produktivitas LPC (Sheet: ", target_sheet, ")"),
-    exclude_cols = c("ID", "id", "Id", "KODE", "Kode", "NO", "No")
+    exclude_cols = c("ID", "id", "Id", "KODE", "Kode", "NO", "No"),
+    percent_cols = pct_cols # <-- Tambahkan ini
   )
   
   cat(as.character(htmltools::tagList(res_a2$dt)))
@@ -739,14 +761,14 @@ if (has_a3 && is_valid_file(file_path_a3)) {
   col_from <- names(df_a3)[grep("SEKTOR ASAL|FROM SECTOR", names(df_a3), ignore.case = TRUE)][1]
   col_to   <- names(df_a3)[grep("SEKTOR TUJUAN|TO SECTOR", names(df_a3), ignore.case = TRUE)][1]
   
-  if (!is.na(col_from)) {
+    if (!is.na(col_from)) {
     df_a3 <- df_a3 |>
       dplyr::filter(!is.na(.data[[col_from]])) |>
-      dplyr::mutate(.data[[col_from]] := trimws(.data[[col_from]]))
+      dplyr::mutate(dplyr::across(dplyr::all_of(col_from), trimws))
   }
   if (!is.na(col_to)) {
     df_a3 <- df_a3 |>
-      dplyr::mutate(.data[[col_to]] := trimws(.data[[col_to]]))
+      dplyr::mutate(dplyr::across(dplyr::all_of(col_to), trimws))
   }
   
   dt_a3 <- DT::datatable(
@@ -783,7 +805,6 @@ if (!(has_a1 && is_valid_file(file_path_a1)) &&
 # Ringkasan
 
 ```{r summary-table, echo=FALSE, warning=FALSE, message=FALSE}
-
 # ---- 0. Satuan tampilan: params$unit TANPA kata "Juta" ----
 satuan_dasar <- if (!is.null(params$unit) && nzchar(as.character(params$unit)) &&
                     !is.na(params$unit) && params$unit != "NA") {
@@ -849,12 +870,16 @@ sum_bau <- purrr::map2_dfr(
   dplyr::mutate(Skenario = "BAU")
 
 # ---- 3. Ringkasan Skenario (hanya jika ada) ----
-if (is_scenario) {
+# Tambahkan pengaman: pastikan result_scenario valid dan bukan NULL
+valid_scenario <- is_scenario && !is.null(result_scenario) && is.data.frame(result_scenario)
+
+if (valid_scenario) {
   sum_sc <- purrr::map2_dfr(
     ind_cols, seq_along(ind_cols),
     ~ summary_row(result_scenario, .x, ind_titles[.x], ind_units[.x])
   ) |>
-    dplyr::mutate(Skenario = "Skenario")
+    dplyr::mutate(Skenario = "Intervensi")
+  
   sum_all <- dplyr::bind_rows(sum_bau, sum_sc)
 } else {
   sum_all <- sum_bau
@@ -864,6 +889,7 @@ if (is_scenario) {
 sum_all <- sum_all |>
   dplyr::mutate(
     Indikator = factor(Indikator, levels = ind_titles),
+    # Pastikan level Skenario mencakup keduanya
     Skenario  = factor(Skenario, levels = c("BAU", "Intervensi"))
   ) |>
   dplyr::arrange(Indikator, Skenario) |>
@@ -884,9 +910,8 @@ sum_all <- sum_all |>
   )
 
 # ---- 5. Bar "Pertumbuhan per Tahun" ----
-# Jika hanya BAU (1 baris per indikator), bar tetap ditampilkan
-# sebagai single-bar referensi; warnanya BAU (biru).
-if (is_scenario) {
+# Gunakan `valid_scenario` sebagai penentu, bukan sekadar `is_scenario`
+if (valid_scenario) {
   sum_all <- sum_all %>%
     dplyr::group_by(Indikator) %>%
     dplyr::mutate(
@@ -895,6 +920,7 @@ if (is_scenario) {
         is.na(max_cagr) | max_cagr == 0 | is.infinite(max_cagr), 0,
         pmax(0, pmin(100, `CAGR (%)` / max_cagr * 100))
       ),
+      # Pastikan Skenario "BAU" biru, "Intervensi" oranye
       bar_color  = ifelse(Skenario == "BAU", "#4A90E2", "#F18F01"),
       `Pertumbuhan per Tahun` = sprintf(
         '<div style="display:flex; align-items:center; gap:6px;">
@@ -927,8 +953,8 @@ if (is_scenario) {
     dplyr::select(-`Pertumbuhan (%)`, -`CAGR (%)`, -n_tahun, -bar_width)
 }
 
-# Kolom Skenario dihapus jika tidak ada skenario
-if (!is_scenario) {
+# Hapus kolom Skenario hanya jika benar-benar tidak ada data intervensi
+if (!valid_scenario) {
   sum_all <- sum_all |> dplyr::select(-Skenario)
 }
 
@@ -999,10 +1025,150 @@ unit  <- ind_units[[col]]
 
 ## `r ind_titles[[ind_cols[1]]]` {.tabset}
 
+Pendapatan domestik regional bruto merupakan salah satu indikator kinerja perekonomian suatu wilayah. Proyeksi terhadap PDRB digunakan untuk mengetahui gambaran mengenai arah pertumbuhan ekonomi di suatu wilayah yang didasarkan pada dua skenario utama yakni BaU serta skenario intervensi.
+
 ### Grafik Proyeksi
+
+```{r hitung-pdrb-narasi, echo=FALSE, message=FALSE, warning=FALSE}
+# --- Nilai PDRB di tahun awal & akhir, untuk skenario & BAU ---
+pdrb_bau_all <- agg_by_year(result_bau, "GDP")
+
+pdrb_bau_start <- pdrb_bau_all |> dplyr::filter(YEAR == min(YEAR)) |> dplyr::pull(Total)
+pdrb_bau_end   <- pdrb_bau_all |> dplyr::filter(YEAR == max(YEAR)) |> dplyr::pull(Total)
+
+if (is_scenario) {
+  pdrb_sc_all <- agg_by_year(result_scenario, "GDP")
+  pdrb_sc_start <- pdrb_sc_all |> dplyr::filter(YEAR == min(YEAR)) |> dplyr::pull(Total)
+  pdrb_sc_end   <- pdrb_sc_all |> dplyr::filter(YEAR == max(YEAR)) |> dplyr::pull(Total)
+
+  # Selisih absolut & relatif
+  selisih_pdrb_abs <- pdrb_sc_end - pdrb_bau_end
+  selisih_pdrb_pct <- if (!is.na(pdrb_bau_end) && pdrb_bau_end != 0) {
+    (selisih_pdrb_abs) / pdrb_bau_end * 100
+  } else {
+    NA_real_
+  }
+} else {
+  pdrb_sc_start <- NA_real_
+  pdrb_sc_end   <- NA_real_
+  selisih_pdrb_abs <- NA_real_
+  selisih_pdrb_pct <- NA_real_
+}
+
+# Pertumbuhan total BAU (awal → akhir)
+growth_bau_pct <- if (!is.na(pdrb_bau_start) && pdrb_bau_start != 0) {
+  (pdrb_bau_end - pdrb_bau_start) / pdrb_bau_start * 100
+} else {
+  NA_real_
+}
+
+# --- Formatter ---
+fmt_triliun <- function(x) {
+  if (is.na(x)) return("NA")
+  paste0(format(round(x / 1e6, 2), big.mark = ".", decimal.mark = ",", nsmall = 2), " Triliun")
+}
+fmt_uang_penuh <- function(x) {
+  if (is.na(x)) return("-")
+  paste0("Rp ", format(round(x, 0), big.mark = ".", decimal.mark = ","), " Juta")
+}
+fmt_pct <- function(x) {
+  if (is.na(x)) return("-")
+  paste0(ifelse(x > 0, "+", ""), format(round(x, 2), big.mark = ".", decimal.mark = ","), "%")
+}
+
+pdrb_bau_fmt      <- format_uang(pdrb_bau_end)
+pdrb_sc_fmt       <- format_uang(pdrb_sc_end)
+selisih_pdrb_fmt  <- fmt_pct(selisih_pdrb_pct)
+growth_bau_fmt    <- fmt_pct(growth_bau_pct)
+```
+
+```{r narasi-pdrb, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+if (!is_scenario) {
+  # =================================================================
+  # MODE BAU ONLY
+  # =================================================================
+  cat("Pada skenario BaU (*Business as Usual*), PDRB wilayah **")
+  cat(params$location)
+  cat("** diproyeksikan mencapai **")
+  cat(pdrb_bau_fmt)
+  cat("** pada akhir periode simulasi tahun **")
+  cat(params$end_year)
+  cat("**. Angka ini mencerminkan pertumbuhan sebesar **")
+  cat(if (is.na(growth_bau_pct)) "NA" else growth_bau_fmt)
+  cat("** dibandingkan tahun **")
+  cat(params$initial_year)
+  cat("** (baseline). Skenario BaU menggambarkan kondisi perekonomian tanpa intervensi ")
+  cat("kebijakan, sehingga menjadi acuan untuk mengevaluasi dampak skenario intervensi.\n\n")
+} else {
+  # =================================================================
+  # MODE SKENARIO VS BAU
+  # =================================================================
+  cat("Hasil proyeksi menunjukkan bahwa pada akhir periode simulasi tahun **")
+  cat(params$end_year)
+  cat("**, penerapan skenario intervensi (")
+  cat(paste(active_assumptions, collapse = ", "))
+  cat(") mampu menghasilkan PDRB sebanyak **")
+  cat(params$unit)
+  cat(" ")
+  cat(pdrb_sc_fmt)
+  cat("** ")
+  cat(". Angka tersebut **")
+  cat(selisih_pdrb_fmt)
+  cat("** lebih besar ketimbang hasil proyeksi PDRB menggunakan skenario BaU ")
+  cat("yakni **")
+  cat(params$unit)
+  cat(" ")
+  cat(pdrb_bau_fmt)
+  cat("** ")
+  cat(". Peningkatan ini mencerminkan dampak kumulatif dari intervensi kebijakan ")
+  cat("yang disimulasikan terhadap struktur perekonomian regional.\n\n")
+}
+```
 
 ```{r plot-gdp, echo=FALSE, message=FALSE, warning=FALSE}
 build_plot(ind_cols[1], ind_titles[[ind_cols[1]]])
+```
+
+```{r ringkasan-pdrb-heading, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+if (is_scenario) {
+  cat("\n\n### Ringkasan Perbandingan\n\n")
+
+  warna_selisih <- if (is.na(selisih_pdrb_abs) || selisih_pdrb_abs >= 0) "#27ae60" else "#e74c3c"
+  warna_persen  <- if (is.na(selisih_pdrb_pct) || selisih_pdrb_pct >= 0) "#27ae60" else "#e74c3c"
+
+  df_compare <- data.frame(
+    Parameter = c(
+      paste0("PDRB BAU ", params$end_year, " (", params$unit, ")"),
+      paste0("PDRB ", params$scenario_name, " ", params$end_year, " (", params$unit, ")"),
+      paste0("Selisih Tambahan PDRB (", params$unit, ")"),
+      "Persentase Kenaikan dibanding BAU (%)"
+    ),
+    Nilai = c(
+      format_uang(pdrb_bau_end),
+      format_uang(pdrb_sc_end),
+      kableExtra::cell_spec(format_uang(selisih_pdrb_abs), color = warna_selisih),
+      kableExtra::cell_spec(fmt_pct(selisih_pdrb_pct),     color = warna_persen)
+    ),
+    stringsAsFactors = FALSE
+  )
+
+  df_compare |>
+    kableExtra::kbl(
+      col.names = c("Parameter Indikator", "Nilai Simulasi"),
+      align     = c("l", "r"),
+      escape    = FALSE,
+      caption   = paste0(
+        "Perbandingan PDRB ", params$location, " (BAU vs ",
+        params$scenario_name, ") Tahun ", params$end_year
+      )
+    ) |>
+    kableExtra::kable_styling(
+      bootstrap_options = c("striped", "hover", "condensed"),
+      full_width = FALSE,
+      font_size  = 13
+    ) |>
+    kableExtra::row_spec(c(3, 4), bold = TRUE)
+}
 ```
 
 ### Tabel Rekapitulasi
@@ -1018,15 +1184,24 @@ if (is_money(ind_cols[1])) {
   if (is_scenario) {
     recap_tbl <- recap_tbl |>
       dplyr::mutate(
-        Skenario = format_uang(Skenario, satuan_uang),
+        Intervensi = format_uang(Intervensi, satuan_uang),
         `Selisih (%)` = formatC(`Selisih (%)`, format = "f", digits = 2, big.mark = ",")
       )
   }
 }
 
+kolom_bau <- paste0("BAU (", params$unit, ")")
+kolom_intervensi <- paste0("Intervensi (", params$unit, ")")
+
+nama_kolom <- c("Tahun", kolom_bau)
+if (is_scenario) {
+  nama_kolom <- c(nama_kolom, kolom_intervensi, "Selisih (%)")
+}
+
 dt <- DT::datatable(
   recap_tbl,
   rownames   = FALSE,
+  colnames   = nama_kolom, # <-- Tambahkan ini
   caption    = paste0(
     "Rekapitulasi ", ind_titles[[ind_cols[1]]],
     " (", ind_units[[ind_cols[1]]], ")",
@@ -1042,7 +1217,7 @@ dt <- DT::datatable(
 if (!is_money(ind_cols[1])) {
   dt <- dt |> DT::formatRound("BAU", digits = 2, mark = ",")
   if (is_scenario) {
-    dt <- dt |> DT::formatRound(c("Skenario", "Selisih (%)"), digits = 2, mark = ",")
+    dt <- dt |> DT::formatRound(c("Intervensi", "Selisih (%)"), digits = 2, mark = ",")
   }
 }
 dt
@@ -1050,7 +1225,96 @@ dt
 
 ## `r ind_titles[[ind_cols[2]]]` {.tabset}
 
+Proyeksi serapan tenaga kerja mengasumsikan penambahan tenaga kerja baru tahunan sebagai hasil akumulasi selisih pertumbuhan PDRB yang diselaraskan dengan nilai Labor Multiplier. Intervensi melalui skenario (A1, A2, A3) diharapkan mampu menyerap lebih banyak tenaga kerja. 
+
 ### Grafik Proyeksi
+
+```{r hitung-labour-narasi, echo=FALSE, message=FALSE, warning=FALSE}
+# --- Nilai tenaga kerja di tahun awal & akhir, untuk skenario & BAU ---
+labour_bau_all <- agg_by_year(result_bau, "LABOUR")
+
+labour_bau_start <- labour_bau_all |> dplyr::filter(YEAR == min(YEAR)) |> dplyr::pull(Total)
+labour_bau_end   <- labour_bau_all |> dplyr::filter(YEAR == max(YEAR)) |> dplyr::pull(Total)
+
+if (is_scenario) {
+  labour_sc_all <- agg_by_year(result_scenario, "LABOUR")
+  labour_sc_start <- labour_sc_all |> dplyr::filter(YEAR == min(YEAR)) |> dplyr::pull(Total)
+  labour_sc_end   <- labour_sc_all |> dplyr::filter(YEAR == max(YEAR)) |> dplyr::pull(Total)
+
+  # Selisih skenario vs BAU (relatif, %)
+  selisih_labour_pct <- if (!is.na(labour_bau_end) && labour_bau_end != 0) {
+    (labour_sc_end - labour_bau_end) / labour_bau_end * 100
+  } else {
+    NA_real_
+  }
+} else {
+  labour_sc_start <- NA_real_
+  labour_sc_end   <- NA_real_
+  selisih_labour_pct <- NA_real_
+}
+
+# Pertumbuhan total BAU (awal → akhir)
+growth_labour_bau_pct <- if (!is.na(labour_bau_start) && labour_bau_start != 0) {
+  (labour_bau_end - labour_bau_start) / labour_bau_start * 100
+} else {
+  NA_real_
+}
+
+# --- Formatter ---
+fmt_orang <- function(x) {
+  if (is.na(x)) return("NA")
+  format(round(x, 0), big.mark = ".", decimal.mark = ",", scientific = FALSE)
+}
+fmt_persen <- function(x) {
+  if (is.na(x)) return("NA")
+  paste0(format(round(x, 1), big.mark = ".", decimal.mark = ","), "%")
+}
+
+labour_bau_fmt      <- fmt_orang(labour_bau_end)
+labour_bau_start_fmt <- fmt_orang(labour_bau_start)
+labour_sc_fmt       <- fmt_orang(labour_sc_end)
+selisih_labour_fmt  <- fmt_persen(selisih_labour_pct)
+growth_labour_fmt   <- fmt_persen(growth_labour_bau_pct)
+```
+
+```{r narasi-labour, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+if (!is_scenario) {
+  # =================================================================
+  # MODE BAU ONLY
+  # =================================================================
+  cat("Pada skenario BaU (*Business as Usual*), serapan tenaga kerja wilayah **")
+  cat(params$location)
+  cat("** diproyeksikan mencapai **")
+  cat(labour_bau_fmt)
+  cat("** orang pada akhir periode simulasi tahun **")
+  cat(params$end_year)
+  cat("**. Angka ini mencerminkan pertumbuhan sebesar **")
+  cat(growth_labour_fmt)
+  cat("** dibandingkan tahun **")
+  cat(params$initial_year)
+  cat("** (baseline). Skenario BaU menggambarkan kondisi penyerapan tenaga kerja ")
+  cat("tanpa intervensi kebijakan, sehingga menjadi acuan untuk mengevaluasi ")
+  cat("dampak skenario intervensi terhadap perluasan kesempatan kerja.\n\n")
+} else {
+  # =================================================================
+  # MODE SKENARIO VS BAU
+  # =================================================================
+  cat("Hasil proyeksi menunjukkan bahwa skenario intervensi (")
+  cat(paste(active_assumptions, collapse = ", "))
+  cat(") di akhir tahun **")
+  cat(params$end_year)
+  cat("** diproyeksikan mampu meningkatkan total tenaga kerja sebesar **")
+  cat(labour_sc_fmt)
+  cat("** orang. Angka tersebut **")
+  cat(selisih_labour_fmt)
+  cat("** lebih besar bila dibandingkan dengan hasil simulasi penerapan ")
+  cat("skenario BaU (*Business as Usual*) yakni **")
+  cat(labour_bau_fmt)
+  cat("** orang. Peningkatan ini mencerminkan tambahan kapasitas penyerapan ")
+  cat("tenaga kerja sebagai dampak dari intervensi kebijakan yang disimulasikan ")
+  cat("terhadap struktur perekonomian regional.\n\n")
+}
+```
 
 ```{r plot-labour, echo=FALSE, message=FALSE, warning=FALSE}
 build_plot(ind_cols[2], ind_titles[[ind_cols[2]]])
@@ -1061,9 +1325,19 @@ build_plot(ind_cols[2], ind_titles[[ind_cols[2]]])
 ```{r recap-labour, echo=FALSE, message=FALSE, warning=FALSE}
 recap_tbl <- build_recap_table(ind_cols[2], ind_titles[[ind_cols[2]]])
 
+# Sesuaikan nama kolom di tampilan tabel (Header)
+kolom_bau        <- "BAU (Orang)"
+kolom_intervensi <- "Intervensi (Orang)"
+
+nama_kolom <- c("Tahun", kolom_bau)
+if (is_scenario) {
+  nama_kolom <- c(nama_kolom, kolom_intervensi, "Selisih (%)")
+}
+
 dt <- DT::datatable(
   recap_tbl,
   rownames   = FALSE,
+  colnames   = nama_kolom, # Argumen baru untuk header
   caption    = paste0(
     "Rekapitulasi ", ind_titles[[ind_cols[2]]],
     " (", ind_units[[ind_cols[2]]], ")",
@@ -1077,15 +1351,18 @@ dt <- DT::datatable(
 )
 
 if (!is_money(ind_cols[2])) {
-  dt <- dt |> DT::formatRound("BAU", digits = 2, mark = ",")
+  # Tetap gunakan nama kolom asli ("BAU", "Intervensi") untuk formatRound
+  dt <- dt |> DT::formatRound("BAU", digits = 0, mark = ",")
   if (is_scenario) {
-    dt <- dt |> DT::formatRound(c("Skenario", "Selisih (%)"), digits = 2, mark = ",")
+    dt <- dt |> DT::formatRound(c("Intervensi", "Selisih (%)"), digits = 2, mark = ",")
   }
 }
 dt
 ```
 
 ## `r ind_titles[[ind_cols[3]]]` {.tabset}
+
+Proyeksi pendapatan masyarakat di wilayah `r params$location` didapat berdasarkan pendekatan koefisien kompensasi tenaga kerja (proporsi upah dan gaji terhadap PDRB) yang dihubungkan secara langsung dengan total PDRB proyeksi tahunan.
 
 ### Grafik Proyeksi
 
@@ -1106,15 +1383,25 @@ if (is_money(ind_cols[3])) {
   if (is_scenario) {
     recap_tbl <- recap_tbl |>
       dplyr::mutate(
-        Skenario = format_uang(Skenario, satuan_uang),
+        Intervensi = format_uang(Intervensi, satuan_uang),  # <-- Ubah Skenario jadi Intervensi
         `Selisih (%)` = formatC(`Selisih (%)`, format = "f", digits = 2, big.mark = ",")
       )
   }
 }
 
+# Tentukan nama kolom untuk tampilan header
+kolom_bau <- paste0("BAU (", params$unit, ")")
+kolom_intervensi <- paste0("Intervensi (", params$unit, ")")
+
+nama_kolom <- c("Tahun", kolom_bau)
+if (is_scenario) {
+  nama_kolom <- c(nama_kolom, kolom_intervensi, "Selisih (%)")
+}
+
 dt <- DT::datatable(
   recap_tbl,
   rownames   = FALSE,
+  colnames   = nama_kolom, # <-- Tambahkan colnames
   caption    = paste0(
     "Rekapitulasi ", ind_titles[[ind_cols[3]]],
     " (", ind_units[[ind_cols[3]]], ")",
@@ -1130,7 +1417,8 @@ dt <- DT::datatable(
 if (!is_money(ind_cols[3])) {
   dt <- dt |> DT::formatRound("BAU", digits = 2, mark = ",")
   if (is_scenario) {
-    dt <- dt |> DT::formatRound(c("Skenario", "Selisih (%)"), digits = 2, mark = ",")
+    # <-- Ubah "Skenario" jadi "Intervensi"
+    dt <- dt |> DT::formatRound(c("Intervensi", "Selisih (%)"), digits = 2, mark = ",")
   }
 }
 
@@ -1139,7 +1427,114 @@ dt
 
 ## `r ind_titles[[ind_cols[4]]]` {.tabset}
 
+Selanjutnya, proyeksi pendapatan tersebut dibagi dengan total penduduk `r params$location` untuk memperoleh proyeksi pendapatan per kapita masyarakat.
+
 ### Grafik Proyeksi
+
+```{r hitung-income-percapita-narasi, echo=FALSE, message=FALSE, warning=FALSE}
+# Cek apakah data per-kapita tersedia
+has_percap_data <- "INCOME_PER_CAPITA" %in% names(result_scenario) &&
+                   any(!is.na(result_scenario$INCOME_PER_CAPITA))
+
+if (has_percap_data) {
+  # Nilai INCOME_PER_CAPITA di tahun akhir untuk skenario & BAU
+  inc_pc_scenario_end <- agg_by_year(result_scenario, "INCOME_PER_CAPITA") |>
+    dplyr::filter(YEAR == max(YEAR)) |>
+    dplyr::pull(Total)
+
+  inc_pc_bau_end <- agg_by_year(result_bau, "INCOME_PER_CAPITA") |>
+    dplyr::filter(YEAR == max(YEAR)) |>
+    dplyr::pull(Total)
+
+  # Selisih absolut (dalam satuan params$unit) & relatif (%)
+  inc_pc_selisih_abs <- inc_pc_scenario_end - inc_pc_bau_end
+  inc_pc_selisih_pct <- if (!is.na(inc_pc_bau_end) && inc_pc_bau_end != 0) {
+    inc_pc_selisih_abs / inc_pc_bau_end * 100
+  } else {
+    NA_real_
+  }
+
+  # Rerata CAGR pendapatan per kapita (skenario)
+  inc_pc_cagr <- agg_by_year(result_scenario, "INCOME_PER_CAPITA") |>
+    dplyr::arrange(YEAR) |>
+    dplyr::summarise(
+      CAGR = {
+        n <- max(1, max(YEAR) - min(YEAR))
+        v_awal  <- dplyr::first(Total)
+        v_akhir <- dplyr::last(Total)
+        if (!is.na(v_awal) && v_awal > 0 && !is.na(v_akhir)) {
+          ((v_akhir / v_awal)^(1 / n) - 1) * 100
+        } else {
+          NA_real_
+        }
+      }
+    ) |>
+    dplyr::pull(CAGR)
+
+  # Format nilai uang per kapita (tanpa prefix satuan karena tabel sudah ada)
+  fmt_uang_perkapita <- function(x) {
+    if (is.na(x)) return("NA")
+    format_uang(x, satuan_uang)
+  }
+  # Format persen
+  fmt_persen_1 <- function(x) {
+    if (is.na(x)) return("NA")
+    paste0(format(round(x, 1), big.mark = ".", decimal.mark = ","), "%")
+  }
+
+  inc_pc_selisih_abs_fmt <- fmt_uang_perkapita(inc_pc_selisih_abs)
+  inc_pc_selisih_pct_fmt <- fmt_persen_1(inc_pc_selisih_pct)
+  inc_pc_cagr_fmt        <- fmt_persen_1(inc_pc_cagr)
+}
+```
+
+```{r narasi-income-percapita, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+if (!has_percap_data) {
+  # Mode: data populasi tidak tersedia
+  cat("Data proyeksi penduduk tidak tersedia pada analisis ini. ",
+      "Indikator pendapatan per kapita tidak dapat dihitung. ",
+      "Silakan unggah file proyeksi penduduk lalu jalankan ulang analisis.\n\n")
+} else if (!is_scenario) {
+  # Mode: BAU-only
+  cat(sprintf(
+    "Pada akhir tahun **%d**, pendapatan per kapita wilayah **%s** ",
+    params$end_year, params$location
+  ))
+  cat(sprintf(
+    "diproyeksikan mencapai **%s** %s per kapita.\n\n",
+    inc_pc_bau_end_fmt <- format_uang(inc_pc_bau_end, satuan_uang),
+    params$unit
+  ))
+} else {
+  # Mode: skenario vs BAU
+  cat("Sejalan dengan pertumbuhan PDRB regional, penerapan skenario intervensi ",
+      sprintf("(%s) ", paste(active_assumptions, collapse = ", ")),
+      "terbukti mampu memberikan dorongan signifikan terhadap peningkatan ",
+      "pendapatan per kapita di wilayah studi dibandingkan kondisi ",
+      "Business As Usual (BAU).\n\n")
+
+  cat(sprintf(
+    "Skenario penuh **%s** diproyeksikan mampu meningkatkan rerata laju pertumbuhan ",
+    paste(active_assumptions, collapse = ", ")
+  ))
+  cat(sprintf(
+    "pendapatan per kapita **%s** menjadi **%s** per tahun. ",
+    params$location, inc_pc_cagr_fmt
+  ))
+  cat(sprintf(
+    "Pada tahun terakhir simulasi (%d), skenario ini menghasilkan selisih kenaikan ",
+    params$end_year
+  ))
+  cat(sprintf(
+    "pendapatan per kapita sebesar **%s** %s per kapita — ",
+    inc_pc_selisih_abs_fmt, params$unit
+  ))
+  cat(sprintf(
+    "sekitar **%s** lebih tinggi dibandingkan skenario BAU.\n\n",
+    inc_pc_selisih_pct_fmt
+  ))
+}
+```
 
 ```{r plot-income-per-capita, echo=FALSE, message=FALSE, warning=FALSE}
 has_percap <- "INCOME_PER_CAPITA" %in% names(result_scenario) &&
@@ -1171,15 +1566,25 @@ if (is_money(ind_cols[4])) {
   if (is_scenario) {
     recap_tbl <- recap_tbl |>
       dplyr::mutate(
-        Skenario = format_uang(Skenario, satuan_uang),
+        Intervensi = format_uang(Intervensi, satuan_uang),  # <-- Ubah Skenario jadi Intervensi
         `Selisih (%)` = formatC(`Selisih (%)`, format = "f", digits = 2, big.mark = ",")
       )
   }
 }
 
+# Tentukan nama kolom dengan tambahan "/Orang" untuk indikator per kapita
+kolom_bau <- paste0("BAU (", params$unit, "/Orang)")
+kolom_intervensi <- paste0("Intervensi (", params$unit, "/Orang)")
+
+nama_kolom <- c("Tahun", kolom_bau)
+if (is_scenario) {
+  nama_kolom <- c(nama_kolom, kolom_intervensi, "Selisih (%)")
+}
+
 dt <- DT::datatable(
   recap_tbl,
   rownames   = FALSE,
+  colnames   = nama_kolom, # <-- Tambahkan colnames
   caption    = paste0(
     "Rekapitulasi ", ind_titles[[ind_cols[4]]],
     " (", ind_units[[ind_cols[4]]], ")",
@@ -1195,7 +1600,8 @@ dt <- DT::datatable(
 if (!is_money(ind_cols[4])) {
   dt <- dt |> DT::formatRound("BAU", digits = 2, mark = ",")
   if (is_scenario) {
-    dt <- dt |> DT::formatRound(c("Skenario", "Selisih (%)"), digits = 2, mark = ",")
+    # <-- Ubah "Skenario" jadi "Intervensi"
+    dt <- dt |> DT::formatRound(c("Intervensi", "Selisih (%)"), digits = 2, mark = ",")
   }
 }
 
@@ -1204,7 +1610,103 @@ dt
 
 ## `r ind_titles[[ind_cols[5]]]` {.tabset}
 
+Proyeksi total keuntungan usaha regional dihitung berdasarkan proporsi Surplus Usaha Bruto (Gross Operating Surplus) terhadap total PDRB, yang kemudian diselaraskan dengan proyeksi PDRB. Indikator ini mencerminkan porsi nilai tambah ekonomi yang diperoleh para pelaku usaha dan pemilik modal atas investasi serta aktivitas bisnis di wilayah `r params$location`.
+
 ### Grafik Proyeksi
+
+```{r hitung-surplus-narasi, echo=FALSE, message=FALSE, warning=FALSE}
+# Nilai SURPLUS BAU di tahun akhir
+surplus_bau_end <- agg_by_year(result_bau, "SURPLUS") |>
+  dplyr::filter(YEAR == max(YEAR)) |>
+  dplyr::pull(Total)
+
+# Inisialisasi nilai default (untuk mode BAU-only)
+surplus_scenario_end <- NA_real_
+surplus_selisih_abs  <- NA_real_
+surplus_selisih_pct  <- NA_real_
+
+# Hitung nilai skenario HANYA jika skenario aktif
+if (is_scenario) {
+  surplus_scenario_end <- agg_by_year(result_scenario, "SURPLUS") |>
+    dplyr::filter(YEAR == max(YEAR)) |>
+    dplyr::pull(Total)
+
+  # Selisih absolut & relatif
+  surplus_selisih_abs <- surplus_scenario_end - surplus_bau_end
+  surplus_selisih_pct <- if (!is.na(surplus_bau_end) && surplus_bau_end != 0) {
+    surplus_selisih_abs / surplus_bau_end * 100
+  } else {
+    NA_real_
+  }
+}
+
+# Format nilai uang dengan pemisah ribuan, tanpa skala (karena narasi pakai "triliun")
+fmt_uang_penuh <- function(x) {
+  if (is.na(x)) return("NA")
+  paste0("Rp", format(round(x, 2), big.mark = ",", decimal.mark = ".", nsmall = 0))
+}
+
+# Konversi ke triliun untuk narasi
+fmt_triliun <- function(x) {
+  if (is.na(x)) return("NA")
+  paste0("Rp", format(round(x / 1e6, 2), big.mark = ",", decimal.mark = ".", nsmall = 2), " triliun")
+}
+
+# Format persen (koma desimal untuk narasi Indonesia)
+fmt_persen_1 <- function(x) {
+  if (is.na(x)) return("NA")
+  paste0(format(round(x, 1), big.mark = ".", decimal.mark = ","), "%")
+}
+
+surplus_bau_fmt         <- fmt_triliun(surplus_bau_end)
+surplus_scenario_fmt    <- fmt_triliun(surplus_scenario_end)
+surplus_selisih_fmt     <- fmt_triliun(surplus_selisih_abs)
+surplus_selisih_pct_fmt <- fmt_persen_1(surplus_selisih_pct)
+```
+
+```{r narasi-surplus, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+if (!is_scenario) {
+  # Mode BAU-only
+  cat("Tanpa adanya intervensi kebijakan perekonomian regional, keuntungan usaha ")
+  cat(sprintf(
+    "diproyeksikan tumbuh secara alamiah hingga mencapai **%s** pada tahun **%d**.\n\n",
+    surplus_bau_fmt, params$end_year
+  ))
+} else {
+  # Mode skenario vs BAU
+  cat("Tanpa adanya intervensi kebijakan perekonomian regional, keuntungan usaha ")
+  cat(sprintf(
+    "diproyeksikan tumbuh secara alamiah hingga mencapai **%s** pada tahun **%d**. ",
+    surplus_bau_fmt, params$end_year
+  ))
+  cat(sprintf(
+    "Sedangkan dengan penerapan skenario intervensi (%s), nilai proyeksi keuntungan usaha ",
+    paste(active_assumptions, collapse = ", ")
+  ))
+  cat(sprintf(
+    "mencapai **%s** pada akhir periode simulasi tahun **%d**. ",
+    surplus_scenario_fmt, params$end_year
+  ))
+  cat("Penerapan skenario intervensi berpotensi memberikan tambahan keuntungan usaha ")
+  cat(sprintf(
+    "sebesar **%s** lebih tinggi dibandingkan skenario BAU pada tahun **%d**.\n\n",
+    surplus_selisih_fmt, params$end_year
+  ))
+
+  cat("Pendapatan keuntungan usaha menggambarkan manfaat ekonomi yang diterima oleh ")
+  cat("pelaku usaha sebagai hasil dari perkembangan aktivitas ekonomi di suatu wilayah. ")
+  cat(sprintf(
+    "Grafik di bawah menunjukkan bahwa di akhir periode tahun **%d**, potensi ",
+    params$end_year
+  ))
+  cat("keuntungan usaha regional dapat ditingkatkan menjadi ")
+  cat(sprintf(
+    "**%s** lebih besar dengan menerapkan skenario intervensi (%s) ",
+    surplus_selisih_pct_fmt, paste(active_assumptions, collapse = ", ")
+  ))
+  cat("dibanding skenario BAU.\n\n")
+}
+```
 
 ```{r plot-surplus, echo=FALSE, message=FALSE, warning=FALSE}
 build_plot(ind_cols[5], ind_titles[[ind_cols[5]]])
@@ -1223,15 +1725,25 @@ if (is_money(ind_cols[5])) {
   if (is_scenario) {
     recap_tbl <- recap_tbl |>
       dplyr::mutate(
-        Skenario = format_uang(Skenario, satuan_uang),
+        Intervensi = format_uang(Intervensi, satuan_uang),  # <-- Ubah Skenario jadi Intervensi
         `Selisih (%)` = formatC(`Selisih (%)`, format = "f", digits = 2, big.mark = ",")
       )
   }
 }
 
+# Tentukan nama kolom untuk tampilan header
+kolom_bau <- paste0("BAU (", params$unit, ")")
+kolom_intervensi <- paste0("Intervensi (", params$unit, ")")
+
+nama_kolom <- c("Tahun", kolom_bau)
+if (is_scenario) {
+  nama_kolom <- c(nama_kolom, kolom_intervensi, "Selisih (%)")
+}
+
 dt <- DT::datatable(
   recap_tbl,
   rownames   = FALSE,
+  colnames   = nama_kolom, # <-- Tambahkan colnames
   caption    = paste0(
     "Rekapitulasi ", ind_titles[[ind_cols[5]]],
     " (", ind_units[[ind_cols[5]]], ")",
@@ -1247,7 +1759,8 @@ dt <- DT::datatable(
 if (!is_money(ind_cols[5])) {
   dt <- dt |> DT::formatRound("BAU", digits = 2, mark = ",")
   if (is_scenario) {
-    dt <- dt |> DT::formatRound(c("Skenario", "Selisih (%)"), digits = 2, mark = ",")
+    # <-- Ubah "Skenario" jadi "Intervensi"
+    dt <- dt |> DT::formatRound(c("Intervensi", "Selisih (%)"), digits = 2, mark = ",")
   }
 }
 dt
@@ -1274,15 +1787,25 @@ if (is_money(ind_cols[6])) {
   if (is_scenario) {
     recap_tbl <- recap_tbl |>
       dplyr::mutate(
-        Skenario = format_uang(Skenario, satuan_uang),
+        Intervensi = format_uang(Intervensi, satuan_uang),  # <-- Ubah Skenario jadi Intervensi
         `Selisih (%)` = formatC(`Selisih (%)`, format = "f", digits = 2, big.mark = ",")
       )
   }
 }
 
+# Tentukan nama kolom untuk tampilan header
+kolom_bau <- paste0("BAU (", params$unit, ")")
+kolom_intervensi <- paste0("Intervensi (", params$unit, ")")
+
+nama_kolom <- c("Tahun", kolom_bau)
+if (is_scenario) {
+  nama_kolom <- c(nama_kolom, kolom_intervensi, "Selisih (%)")
+}
+
 dt <- DT::datatable(
   recap_tbl,
   rownames   = FALSE,
+  colnames   = nama_kolom, # <-- Tambahkan colnames
   caption    = paste0(
     "Rekapitulasi ", ind_titles[[ind_cols[6]]],
     " (", ind_units[[ind_cols[6]]], ")",
@@ -1298,7 +1821,8 @@ dt <- DT::datatable(
 if (!is_money(ind_cols[6])) {
   dt <- dt |> DT::formatRound("BAU", digits = 2, mark = ",")
   if (is_scenario) {
-    dt <- dt |> DT::formatRound(c("Skenario", "Selisih (%)"), digits = 2, mark = ",")
+    # <-- Ubah "Skenario" jadi "Intervensi"
+    dt <- dt |> DT::formatRound(c("Intervensi", "Selisih (%)"), digits = 2, mark = ",")
   }
 }
 dt
@@ -1312,7 +1836,7 @@ dt
 pdrb_awal_col  <- paste0("PDRB ", params$initial_year, " (", satuan_uang, ")")
 pdrb_akhir_col <- paste0("PDRB ", params$end_year,     " (", satuan_uang, ")")
 
-sector_summary <- result_scenario |>
+sector_summary <- data_sektoral |>
   dplyr::group_by(SECTOR) |>
   dplyr::summarise(
     GDP_Awal  = GDP[YEAR == min(YEAR)],
@@ -1349,7 +1873,7 @@ DT::datatable(
   rownames   = FALSE,
   escape     = FALSE,
   caption    = paste0(
-    "Top 20 Sektor berdasarkan PDRB Akhir (Skenario) — ",
+    "Top 20 Sektor berdasarkan PDRB Akhir — ",
     params$initial_year, " s.d. ", params$end_year
   ),
   extensions = "Buttons",
@@ -1373,7 +1897,7 @@ DT::datatable(
 lab_awal_col  <- paste0("Serapan TK ", params$initial_year, " (Orang)")
 lab_akhir_col <- paste0("Serapan TK ", params$end_year,     " (Orang)")
 
-lab_summary <- result_scenario |>
+lab_summary <- data_sektoral |>
   dplyr::group_by(SECTOR) |>
   dplyr::summarise(
     TK_Awal  = LABOUR[YEAR == min(YEAR)],
@@ -1436,7 +1960,7 @@ DT::datatable(
 out_awal_col  <- paste0("Output ", params$initial_year, " (", satuan_uang, ")")
 out_akhir_col <- paste0("Output ", params$end_year,     " (", satuan_uang, ")")
 
-out_summary <- result_scenario |>
+out_summary <- data_sektoral |>
   dplyr::group_by(SECTOR) |>
   dplyr::summarise(
     Output_Awal  = OUTPUT[YEAR == min(YEAR)],
