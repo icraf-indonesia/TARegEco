@@ -6,3 +6,4 @@ data/
 vignettes/*.html
 *.Rcheck/
 inst/extdata/output/
+docs
