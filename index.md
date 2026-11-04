@@ -143,7 +143,7 @@ menjadi *baseline* untuk modul Proyeksi.
 
 > **Dokumentasi Lengkap:** Tersedia di folder `R/` dengan format
 > Roxygen2 dan dapat diakses melalui
-> [`help(package = "TARegEco")`](https://rdrr.io/pkg/TARegEco/man).
+> [`help(package = "TARegEco")`](https://icraf-indonesia.github.io/TARegEco/reference).
 
 ------------------------------------------------------------------------
 
