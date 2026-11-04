@@ -2,7 +2,7 @@
 % Please edit documentation in R/projection.R
 \name{run_projection}
 \alias{run_projection}
-\title{Run projection}
+\title{Run projection (Supply-Constrained Mixed Input-Output Model)}
 \usage{
 run_projection(
   gdp_baseline,
@@ -19,44 +19,52 @@ run_projection(
   growth_rate,
   lpc_scenario = NULL,
   io_changes = NULL,
-  intensity_table = NULL
+  intensity_table = NULL,
+  constrained = NULL,
+  unconstrained = NULL
 )
 }
 \arguments{
 \item{gdp_baseline}{Data frame. Baseline GDP table from descriptive analysis.}
 
-\item{income_multiplier}{Data frame. Income multiplier table.}
+\item{income_multiplier}{Data frame. Income multiplier table (kolom Labour_Compensation).}
 
-\item{labour_multiplier}{Data frame. Labour multiplier table.}
+\item{labour_multiplier}{Data frame. Labour multiplier table (kolom Labour).}
 
-\item{SUB_multiplier}{Data frame. Gross operating surplus multiplier table.}
+\item{SUB_multiplier}{Data frame. SUB multiplier table (kolom Surplus).}
 
-\item{output_multiplier}{Data frame. Output multiplier table.}
+\item{output_multiplier}{Data frame. Output multiplier table (unused in this model).}
 
 \item{linkage_table}{Data frame. Linkage table with ITFL and ITBL.}
 
-\item{leontief_matrix}{Numeric matrix. Baseline Leontief inverse.}
+\item{leontief_matrix}{Numeric matrix. Baseline Leontief inverse (unused here).}
 
-\item{full_io_table}{Numeric matrix. Complete IO table.}
+\item{full_io_table}{Numeric matrix. Complete IO table (Z matrix).}
 
 \item{sector_idx}{Integer vector. Sector indices in full IO table.}
 
-\item{P}{Numeric matrix. Land proportion matrix.}
+\item{P}{Numeric matrix. Land proportion matrix [n_sektor × n_tutupan].}
 
-\item{area_matrix}{Numeric matrix. Land area matrix (IDs x years).}
+\item{area_matrix}{Numeric matrix. Land area matrix [n_tutupan × n_tahun].}
 
-\item{growth_rate}{Data frame. Growth rate data.}
+\item{growth_rate}{Numeric vector. Growth rate permintaan akhir per sektor.}
 
 \item{lpc_scenario}{Data frame or `NULL`. LPC scenario inputs.}
 
 \item{io_changes}{Data frame or `NULL`. IO change scenarios.}
 
 \item{intensity_table}{Data frame or `NULL`. Intensity scenarios.}
+
+\item{constrained}{Integer vector. Indikator sektor co (1 = constrained).}
+
+\item{unconstrained}{Integer vector. Indikator sektor nc (1 = unconstrained).}
 }
 \value{
 A data frame with projected indicators for all sectors and years.
 }
 \description{
-Main projection function that simulates regional economic indicators over
-time based on Input-Output data and scenario inputs.
+Simulates regional economic indicators over time using a supply-constrained
+mixed input-output model. Land-constrained (co) sectors are driven by
+land availability × land productivity coefficient (LPC), while
+non-land (nc) sectors are solved via Leontief inverse.
 }
