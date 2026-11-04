@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 577.35" width="300" height="346.41">
+  <defs>
+    <!-- Clip Path Hexagon agar elemen di dalam tidak keluar border -->
+    <clipPath id="hex-clip">
+      <polygon points="250,15 480,147.8 480,429.5 250,562.3 20,429.5 20,147.8" />
+    </clipPath>
+  </defs>
+
+  <!-- Hexagon Background -->
+  <polygon points="250,15 480,147.8 480,429.5 250,562.3 20,429.5 20,147.8" fill="#2C539B" />
+
+  <!-- Elemen Grafis Didalam Clip (Lingkaran Akses Aksen) -->
+  <g clip-path="url(#hex-clip)">
+    <!-- Lingkaran Biru Cerah (Diambil dari logo asli) -->
+    <circle cx="235" cy="275" r="115" fill="#4477D8" opacity="0.95" />
+    <!-- Aksen Lingkaran Kedua untuk Kedalaman Visual Ekonomi/Regional -->
+    <circle cx="280" cy="330" r="140" fill="#3868C4" opacity="0.4" />
+  </g>
+
+  <!-- Border Hexagon Luar -->
+  <polygon points="250,15 480,147.8 480,429.5 250,562.3 20,429.5 20,147.8" fill="none" stroke="#FFFFFF" stroke-width="16" stroke-linejoin="round" />
+
+  <!-- Teks Nama Package R -->
+  <text x="250" y="305" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-weight="800" font-size="70" fill="#FFFFFF" text-anchor="middle" letter-spacing="-1">TARegEco</text>
+</svg>

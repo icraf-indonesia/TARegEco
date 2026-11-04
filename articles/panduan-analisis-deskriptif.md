@@ -1,0 +1,49 @@
+# Panduan Analisis Deskriptif TA Regional Economy
+
+## Pengantar
+
+Analisis Deskriptif bertujuan untuk menggambarkan struktur ekonomi
+regional berdasarkan Tabel Input-Output. Hasilnya berupa:
+
+- Keseimbangan tabel IO per sektor
+- Keterkaitan antar sektor (backward dan forward linkage)
+- PDRB per sektor
+- Multiplier output, pendapatan, tenaga kerja, dan surplus usaha
+- Grafik kontribusi PDRB
+
+## Alur Analisis
+
+1.  Baca data
+2.  Validasi input
+3.  Periksa keseimbangan IO
+4.  Hitung matriks Leontief
+5.  Hitung linkage
+6.  Hitung PDRB dan multiplier
+7.  Ekspor hasil
+
+## Contoh dengan Data Contoh
+
+``` r
+
+library(TARegEco)
+
+io_file <- system.file("extdata/example_data/Input_IO_example.xlsx", package = "TARegEco")
+growth_file <- system.file("extdata/example_data/laju_pertumbuhan_example.xlsx", package = "TARegEco")
+landuse_file <- system.file("extdata/example_data/landcover_lookuptable_example.xlsx", package = "TARegEco")
+
+sector <- read_input_file(io_file, sheet = "sector", header = TRUE)
+ic <- read_input_file(io_file, sheet = "intermediate_consumption", as_matrix = TRUE)
+fd <- read_input_file(io_file, sheet = "final_demand")
+av <- read_input_file(io_file, sheet = "added_value")
+labour <- read_input_file(io_file, sheet = "labour")
+land_prop <- read_input_file(io_file, sheet = "land_proportion", as_matrix = TRUE)
+landuse_table <- read_input_file(landuse_file, header = TRUE)
+growth_rate <- read_input_file(growth_file, header = TRUE)
+
+validate_io_data(sector, ic, fd, av, labour, land_prop)
+
+balance <- check_io_balance(ic, fd, av, sector_names = sector$Sector)
+linkage <- compute_linkage(ic, av)
+gdp <- calculate_gdp(av, ic, fd, sector, land_prop, landuse_table, linkage$Leontief)
+...
+```

@@ -1,0 +1,40 @@
+# Create Input-Output template Excel file
+
+Generates an Excel template with blank sheets that match the expected
+structure of the Input-Output model. This template helps users prepare
+their own data correctly.
+
+## Usage
+
+``` r
+create_io_template(output_path)
+```
+
+## Arguments
+
+- output_path:
+
+  Character. Path to the output \`.xlsx\` file.
+
+## Value
+
+Invisibly returns the output path.
+
+## Details
+
+The template contains the following sheets: - \`sector\`: 3 columns
+(Sector, Category, Land-based) - \`intermediate_consumption\`: blank
+matrix (users fill with numeric values) - \`final_demand\`: first two
+columns for component code and label, followed by empty columns for each
+sector - \`added_value\`: first two columns for component code and
+label, followed by empty columns for each sector - \`labour\`: one
+numeric column - \`land_proportion\`: blank matrix where column sums
+should be 1
+
+## Examples
+
+``` r
+if (FALSE) { # \dontrun{
+create_io_template("inst/extdata/template/template_io.xlsx")
+} # }
+```
