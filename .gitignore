@@ -6,3 +6,10 @@ data/
 vignettes/*.html
 *.Rcheck/
 inst/extdata/output/
+descriptive_analysis.html
+scenario_assumption1.html
+projection_testing.html
+scenario_assumption2.html
+dump
+scenario_assumption3.html
+docs

@@ -5,6 +5,7 @@
 \title{Export descriptive analysis outputs to Excel}
 \usage{
 export_io_analysis(
+  sector,
   gdp_baseline,
   linkage_result,
   growth_rate,
@@ -14,6 +15,7 @@ export_io_analysis(
   LM,
   SUBM,
   land_proportion,
+  landuse_table,
   linkage_table,
   full_io_table,
   code_registry,

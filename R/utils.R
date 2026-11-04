@@ -68,3 +68,29 @@ create_area_matrix <- function(projection_long) {
   
   area_matrix
 }
+
+# ==============================================================================
+# Null-coalescing operator
+# ==============================================================================
+#' Null-coalescing operator
+#'
+#' Mengembalikan `b` (RHS) jika `a` (LHS) adalah `NULL`, vektor kosong,
+#' atau `NA`. Jika `a` memiliki nilai valid, `a` dikembalikan.
+#'
+#' @param a Nilai kiri.
+#' @param b Nilai pengganti (fallback) jika `a` kosong/NA.
+#'
+#' @return `a` jika valid, selainnya `b`.
+#'
+#' @examples
+#' NULL %||% "default"           # "default"
+#' "Rp Juta" %||% "fallback"     # "Rp Juta"
+#' NA %||% "default"             # "default"
+#' character(0) %||% "default"   # "default"
+#'
+#' @name grapes-or-or-grapes
+#' @aliases %||%
+#' @export
+`%||%` <- function(a, b) {
+  if (is.null(a) || length(a) == 0 || (length(a) == 1 && is.na(a))) b else a
+}
