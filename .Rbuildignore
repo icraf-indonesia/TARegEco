@@ -9,3 +9,6 @@
 ^\.Rhistory$
 ^\.RData$
 ^inst/extdata/output$
+^_pkgdown\.yml$
+^docs$
+^pkgdown$

@@ -4,37 +4,25 @@
 \alias{load_scenario_inputs}
 \title{Load scenario inputs with fallback to baseline}
 \usage{
-load_scenario_inputs(sc_input, P_default, growth_rate)
+load_scenario_inputs(sc_input, P_default)
 }
 \arguments{
-\item{sc_input}{A named list containing paths to scenario input files:
+\item{sc_input}{Named list berisi path file skenario:
 `luc_projection`, `land_distribution`, `growth_rate`, `lpc`,
 `io_changes`, `intensity`.}
 
-\item{P_default}{Baseline land proportion matrix.}
+\item{P_default}{Matriks proporsi lahan baseline.}
 
-\item{growth_rate}{Baseline growth rate data.}
+\item{growth_rate}{Data growth rate baseline.}
 }
 \value{
-A list with processed scenario inputs:
-  \item{luc_projection}{Path to scenario land projection file}
-  \item{P}{Scenario land proportion matrix}
-  \item{growth_rate}{Scenario growth rate data}
-  \item{lpc_scenario}{Tibble or `NULL`}
-  \item{io_changes}{Tibble or `NULL`}
-  \item{intensity_table}{Tibble or `NULL`}
+List berisi:
+  \item{luc_projection}{Path ke file proyeksi lahan}
+  \item{area_matrix_scenario}{Matriks tutupan lahan skenario (opsional)}
+  \item{P}{Matriks proporsi lahan skenario}
+  \item{lpc_scenario}{Tibble LPC skenario atau NULL}
+  \item{io_changes}{Tibble perubahan IO atau NULL}
 }
 \description{
-Reads and processes all optional scenario input files. If a file is not
-provided or does not exist, the corresponding baseline value is used.
-}
-\examples{
-\dontrun{
-sc_input <- load_scenario_inputs(
-  sc_input = scenario_files,
-  P_default = P_default,
-  growth_rate = growth_rate
-)
-}
-
+Load scenario inputs with fallback to baseline
 }
