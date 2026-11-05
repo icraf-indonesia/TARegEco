@@ -217,12 +217,48 @@ load_projection_baseline <- function(path, projection_area_file_bau) {
     leontief_matrix <- as.matrix(
       read_input_file(path, sheet = "Leontief_Matrix", as_matrix = TRUE)
     )
-
-    full_io_table <- as.matrix(
-      read_input_file(path, sheet = "Full_IO_Table", as_matrix = TRUE)
-    )
-
+    
     code_registry <- read_input_file(path, sheet = "Code_Registry", header = TRUE)
+
+    # ---- Helper: baca matriks dengan rownames di kolom 1 ----
+    read_matrix_with_rownames <- function(path, sheet) {
+      raw <- readxl::read_excel(path, sheet = sheet, col_names = TRUE)
+      
+      row_labels <- as.character(raw[[1]])
+      
+      mat <- as.matrix(raw[, -1, drop = FALSE])
+      storage.mode(mat) <- "numeric"
+      
+      rownames(mat) <- row_labels
+      colnames(mat) <- row_labels   # paksa sama agar subset [row, col] konsisten
+      
+      mat
+    }
+    
+    # ---- code_registry harus dibaca lebih dulu ----
+    code_registry <- read_input_file(path, sheet = "Code_Registry", header = TRUE)
+    
+    # ---- Leontief: tetap seperti semula (tidak diubah) ----
+    leontief_matrix <- as.matrix(
+      read_input_file(path, sheet = "Leontief_Matrix", as_matrix = TRUE)
+    )
+    
+    # ---- Full IO Table: baca dengan header + rownames ----
+    full_io_table <- read_matrix_with_rownames(path, "Full_IO_Table")
+    
+    # ---- Filter sektor via code_registry ----
+    sector_idx    <- which(code_registry$Type == "Sector")
+    sector_labels <- as.character(code_registry$Code[sector_idx])
+    
+    missing <- setdiff(sector_labels, rownames(full_io_table))
+    if (length(missing) > 0) {
+      stop("Label sektor tidak ada di rownames Full_IO_Table: ",
+           paste(head(missing, 10), collapse = ", "))
+    }
+    
+    # ---- Intermediate consumption: subset by name ----
+    intermediate_consumption <- full_io_table[sector_labels, sector_labels, drop = FALSE]
+    storage.mode(intermediate_consumption) <- "numeric"
 
     income_multiplier <- read_input_file(path, sheet = "Multiplier_Income", header = TRUE)
     labour_multiplier <- read_input_file(path, sheet = "Multiplier_Labour", header = TRUE)
@@ -271,11 +307,6 @@ load_projection_baseline <- function(path, projection_area_file_bau) {
       P_default[is.na(P_default)] <- 0
       storage.mode(P_default) <- "numeric"
     }
-
-    # Intermediate consumption from Full IO Table
-    sector_idx <- which(code_registry$Type == "Sector")
-    intermediate_consumption <- full_io_table[sector_idx, sector_idx, drop = FALSE]
-    storage.mode(intermediate_consumption) <- "numeric"
 
     # Growth rate
     growth_rate <- tryCatch(
@@ -477,42 +508,79 @@ load_scenario_inputs <- function(sc_input, P_default) {
   }
   
   # --- D. IO Changes / Restrukturisasi (sheet "Restrukturisasi") ------------
-  io_sc <- NULL
+  io_sc <- NULL     
+  
   if (!is.null(sc_input$io_changes) && file.exists(sc_input$io_changes)) {
-    sheet_names <- readxl::excel_sheets(sc_input$io_changes)
+    sheet_names_io <- readxl::excel_sheets(sc_input$io_changes)
     
-    # Deteksi nama sheet Restrukturisasi (fleksibel "Restrukturisasi" atau "Skenario_4_Restrukturisasi")
-    if ("Restrukturisasi" %in% sheet_names) {
-      sheet_target <- "Restrukturisasi"
-      skip_rows <- 11
-    } else if ("Skenario_4_Restrukturisasi" %in% sheet_names) {
-      sheet_target <- "Skenario_4_Restrukturisasi"
-      skip_rows <- 11
+    # Deteksi nama sheet
+    if ("Asumsi_3_Realokasi_FD" %in% sheet_names_io) {
+      sheet_target <- "Asumsi_3_Realokasi_FD"
+      # Cek apakah header di baris 1 (v2) atau baris 4 (v1)
+      preview_df <- read_input_file(sc_input$io_changes, sheet = sheet_target, skip = 0, header = FALSE)
+      if (any(grepl("Sektor Asal", unlist(preview_df[1, ]), ignore.case = TRUE))) {
+        skip_rows <- 0
+      } else {
+        skip_rows <- 3
+      }
     } else {
       sheet_target <- 1
       skip_rows <- 0
     }
     
+    # Pembacaan menggunakan fungsi kustom read_input_file()
     io_sc <- read_input_file(
-      path   = sc_input$io_changes,
-      sheet  = sheet_target,
-      skip   = skip_rows,
+      path = sc_input$io_changes,
+      sheet = sheet_target,
+      skip = skip_rows,
       header = TRUE
     )
+    colnames(io_sc) <- trimws(colnames(io_sc))
     
-    # Penanganan format kolom lama (jika ada Change_Pct)
-    if ("Change_Pct" %in% colnames(io_sc)) {
-      io_sc$Change_Pct <- as.numeric(io_sc$Change_Pct) / 100
+    # --- Validasi & Capping Maksimal 90% (0.90) pada Kolom Tahun (misal 2025 s/d 2045) ---
+    year_cols <- grep("^[0-9]{4}$", colnames(io_sc), value = TRUE)
+    
+    if (length(year_cols) > 0) {
+      for (yr in year_cols) {
+        io_sc[[yr]] <- as.numeric(io_sc[[yr]])
+        
+        for (idx in seq_along(io_sc[[yr]])) {
+          val <- io_sc[[yr]][idx]
+          if (!is.na(val)) {
+            # Konversi jika persentase diinput dalam skala 0-100 (misal 95% -> 0.95)
+            if (val > 1) val <- val / 100
+            
+            # Capping maksimal 90% (0.90)
+            if (val > 0.90) {
+              warning(sprintf(
+                "⚠️ [CAPPING 90%%] Baris %d pada tahun %s melebihi 90%% (%.1f%%). Nilai otomatis dibatasi menjadi 90.0%%.",
+                idx, yr, val * 100
+              ))
+              val <- 0.90
+            }
+            io_sc[[yr]][idx] <- val
+          }
+        }
+      }
     }
+    
+    # Penanganan format kolom lama (jika menggunakan kolom Change_Pct)
+    if ("Change_Pct" %in% colnames(io_sc)) {
+      io_sc$Change_Pct <- as.numeric(io_sc$Change_Pct)
+      io_sc$Change_Pct <- ifelse(io_sc$Change_Pct > 1, io_sc$Change_Pct / 100, io_sc$Change_Pct)
+      io_sc$Change_Pct <- pmin(io_sc$Change_Pct, 0.90)
+    }
+    
+    message("✓ Data IO Changes / Asumsi 3 berhasil dimuat via read_input_file().")
   }
   
-  
+  # Return List Struktur Lengkap
   list(
-    luc_projection       = sc_input$luc_projection,
+    luc_projection = sc_input$luc_projection,
     area_matrix_scenario = area_matrix_sc,
-    P                    = P_sc,
-    lpc_scenario         = lpc_sc,
-    io_changes           = io_sc
+    P = P_sc,
+    lpc_scenario = lpc_sc,
+    io_changes = io_sc
   )
 }
 
