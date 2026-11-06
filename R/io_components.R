@@ -92,6 +92,10 @@ get_added_value_components <- function(intermediate_consumption_m, added_value_m
 #' single complete matrix, along with a Code Registry that maps each code to
 #' label, type, and row/column position.
 #'
+#' The returned `full_io_table` uses **labels** (sector names, FD names, VA names)
+#' as row/column names, so it is human-readable. The `code_registry` retains the
+#' original numeric codes for internal mapping.
+#'
 #' @param sector A data frame or tibble with at least one column of sector names.
 #' @param intermediate_consumption_m Numeric matrix of intermediate consumption.
 #' @param final_demand_m Numeric matrix of final demand.
@@ -102,8 +106,8 @@ get_added_value_components <- function(intermediate_consumption_m, added_value_m
 #'   code and label for added value components.
 #'
 #' @return A list with elements:
-#'   \item{full_io_table}{Complete IO matrix}
-#'   \item{code_registry}{Tibble with code mapping}
+#'   \item{full_io_table}{Complete IO matrix (rownames/colnames = labels)}
+#'   \item{code_registry}{Tibble with code mapping (Code column kept as-is)}
 #'   \item{n_sector}{Number of sectors}
 #'
 #' @examples
@@ -114,11 +118,16 @@ get_added_value_components <- function(intermediate_consumption_m, added_value_m
 #' @export
 build_full_io_table <- function(sector, intermediate_consumption_m, final_demand_m,
                                 final_demand_component, added_value_m, added_value_lookup) {
-  n_sector   <- nrow(sector)
+  n_sector     <- nrow(sector)
   sector_codes <- as.character(seq_len(n_sector))
-  fd_codes   <- as.character(final_demand_component[[1]])
-  va_codes   <- as.character(added_value_lookup[[1]])
+  sector_labels <- as.character(sector[[1]])
   
+  fd_codes  <- as.character(final_demand_component[[1]])
+  fd_labels <- as.character(final_demand_component[[2]])
+  va_codes  <- as.character(added_value_lookup[[1]])
+  va_labels <- as.character(added_value_lookup[[2]])
+  
+  # ---- Validasi ----
   if (anyNA(fd_codes) || any(trimws(fd_codes) == ""))
     stop("There are empty/NA codes in the first column of 'final_demand'.", call. = FALSE)
   if (anyNA(va_codes) || any(trimws(va_codes) == ""))
@@ -130,28 +139,147 @@ build_full_io_table <- function(sector, intermediate_consumption_m, final_demand
   if (any(fd_codes %in% va_codes))
     stop("Final Demand codes conflict with Added Value codes.")
   
-  row_codes <- c(sector_codes, va_codes)
+  if (anyNA(sector_labels) || any(trimws(sector_labels) == ""))
+    stop("There are empty/NA sector labels.", call. = FALSE)
+  if (anyNA(fd_labels) || any(trimws(fd_labels) == ""))
+    stop("There are empty/NA labels in 'final_demand'.", call. = FALSE)
+  if (anyNA(va_labels) || any(trimws(va_labels) == ""))
+    stop("There are empty/NA labels in 'added_value'.", call. = FALSE)
+  
+  # ---- Cek duplikat label (rownames/colnames harus unik) ----
+  all_row_labels <- c(sector_labels, va_labels)
+  all_col_labels <- c(sector_labels, fd_labels)
+  if (anyDuplicated(all_row_labels))
+    stop("Duplicate labels detected in rownames (sector + added value). ",
+         "Pastikan nama sektor dan komponen added value unik.", call. = FALSE)
+  if (anyDuplicated(all_col_labels))
+    stop("Duplicate labels detected in colnames (sector + final demand). ",
+         "Pastikan nama sektor dan komponen final demand unik.", call. = FALSE)
+  
+  # ---- Bangun matriks dengan LABEL sebagai dimnames ----
+  row_codes <- c(sector_codes, va_codes)   # untuk internal mapping (registry)
   col_codes <- c(sector_codes, fd_codes)
+  row_labels <- c(sector_labels, va_labels)
+  col_labels <- c(sector_labels, fd_labels)
+  
   n_row <- length(row_codes)
   n_col <- length(col_codes)
   
-  full_io <- matrix(NA_real_, nrow = n_row, ncol = n_col,
-                    dimnames = list(row_codes, col_codes))
-  full_io[seq_len(n_sector), seq_len(n_sector)] <- intermediate_consumption_m
-  full_io[seq_len(n_sector), (n_sector + 1):n_col] <- final_demand_m
-  full_io[(n_sector + 1):n_row, seq_len(n_sector)] <- added_value_m
+  full_io <- matrix(
+    NA_real_,
+    nrow = n_row, ncol = n_col,
+    dimnames = list(row_labels, col_labels)   # <-- LABEL, bukan kode
+  )
+  full_io[seq_len(n_sector), seq_len(n_sector)]                   <- intermediate_consumption_m
+  full_io[seq_len(n_sector), (n_sector + 1):n_col]                <- final_demand_m
+  full_io[(n_sector + 1):n_row, seq_len(n_sector)]                <- added_value_m
   
+  # ---- Code Registry (Code tetap kode asli, Label untuk referensi) ----
   code_registry <- dplyr::bind_rows(
-    tibble::tibble(Code = sector_codes, Label = as.character(sector[[1]]),
-                   Type = "Sector", Axis = "Both",
-                   Row_Index = seq_len(n_sector), Col_Index = seq_len(n_sector)),
-    tibble::tibble(Code = fd_codes, Label = as.character(final_demand_component[[2]]),
-                   Type = "Final_Demand", Axis = "Column",
-                   Row_Index = NA_integer_, Col_Index = (n_sector + 1):n_col),
-    tibble::tibble(Code = va_codes, Label = as.character(added_value_lookup[[2]]),
-                   Type = "Added_Value", Axis = "Row",
-                   Row_Index = (n_sector + 1):n_row, Col_Index = NA_integer_)
+    tibble::tibble(
+      Code      = sector_codes,
+      Label     = sector_labels,
+      Type      = "Sector",
+      Axis      = "Both",
+      Row_Index = seq_len(n_sector),
+      Col_Index = seq_len(n_sector)
+    ),
+    tibble::tibble(
+      Code      = fd_codes,
+      Label     = fd_labels,
+      Type      = "Final_Demand",
+      Axis      = "Column",
+      Row_Index = NA_integer_,
+      Col_Index = (n_sector + 1):n_col
+    ),
+    tibble::tibble(
+      Code      = va_codes,
+      Label     = va_labels,
+      Type      = "Added_Value",
+      Axis      = "Row",
+      Row_Index = (n_sector + 1):n_row,
+      Col_Index = NA_integer_
+    )
   )
   
-  list(full_io_table = full_io, code_registry = code_registry, n_sector = n_sector)
+  list(
+    full_io_table = full_io,
+    code_registry = code_registry,
+    n_sector      = n_sector
+  )
+}
+
+#' Extract Final Demand Sectors by KBLI Code Range
+#'
+#' Retrieves a subset of Final Demand sectors from the `code_registry` table 
+#' within the baseline object based on a 3-digit KBLI code range and (optionally) 
+#' the sector category.
+#'
+#' @param baseline List. A baseline object containing `code_registry` as a data frame.
+#' @param kbli_range Integer vector. The targeted 3-digit KBLI code range. Defaults to `301:305`.
+#'
+#' @return A data frame with `Kode` (Code) and `Nama` (Name) columns containing the 
+#'   filtered Final Demand sectors, ordered numerically by code. Returns `NULL` if 
+#'   the registry is missing, columns cannot be mapped, or no matching rows are found.
+#'
+#' @keywords internal
+#' @noRd
+get_final_demand_kbli <- function(baseline, kbli_range = 301:305) {
+  cr <- baseline$code_registry
+  if (is.null(cr) || !is.data.frame(cr) || nrow(cr) == 0) {
+    warning("[get_final_demand_kbli] code_registry kosong.")
+    return(NULL)
+  }
+  
+  names_cr <- trimws(names(cr))
+  
+  # --- Deteksi kolom dengan fallback eksplisit ---
+  # Kolom kode: prioritas "Code" (sesuai struktur Anda)
+  col_code <- names_cr[grep("^Code$|^Kode$|^KBLI$|^Kode_KBLI$",
+                            names_cr, ignore.case = TRUE)][1]
+  # Kolom nama: prioritas "Label" (sesuai struktur Anda)
+  col_name <- names_cr[grep("^Label$|^Nama$|^Name$|^Description$|^Sektor$|^Deskripsi$",
+                            names_cr, ignore.case = TRUE)][1]
+  # Kolom kategori: "Type" (sesuai struktur Anda)
+  col_type <- names_cr[grep("^Type$|^Kategori$|^Category$|^Tipe$",
+                            names_cr, ignore.case = TRUE)][1]
+  
+  # Validasi: kolom kode & nama wajib ada
+  if (is.na(col_code) || is.na(col_name)) {
+    warning("[get_final_demand_kbli] Kolom 'Code' / 'Label' tidak ditemukan. ",
+            "Kolom tersedia: ", paste(names_cr, collapse = ", "))
+    return(NULL)
+  }
+  
+  # --- Ekstrak kode 3 digit ---
+  code_str  <- as.character(cr[[col_code]])
+  code_num  <- suppressWarnings(as.numeric(gsub("[^0-9]", "", code_str)))
+  code_3dig <- floor(code_num / 10^(nchar(code_num) - 3))
+  
+  # --- Filter: kode dalam range DAN Type == "Final_Demand" ---
+  hit <- code_3dig %in% kbli_range
+  
+  if (!is.na(col_type)) {
+    hit <- hit & grepl("final.?demand", cr[[col_type]], ignore.case = TRUE)
+  }
+  
+  if (sum(hit) == 0) {
+    warning("[get_final_demand_kbli] Tidak ada baris dengan kode ",
+            paste(range(kbli_range), collapse = "-"),
+            " dan Type = 'Final_Demand'.")
+    return(NULL)
+  }
+  
+  # --- Bangun output ---
+  out <- data.frame(
+    Code  = code_str[hit],
+    Label = as.character(cr[[col_name]][hit]),
+    Type  = if (!is.na(col_type)) as.character(cr[[col_type]][hit]) else "Final_Demand",
+    stringsAsFactors = FALSE
+  )
+  
+  # Urutkan berdasarkan kode numerik
+  out <- out[order(as.numeric(gsub("[^0-9]", "", out$Code))), ]
+  rownames(out) <- NULL
+  out
 }
