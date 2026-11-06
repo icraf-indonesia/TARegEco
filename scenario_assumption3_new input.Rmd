@@ -36,8 +36,8 @@ invisible(lapply(source_files, source))
 # ==============================================================================
 # PERSIAPAN & SANITASI DATA BASELINE
 # ==============================================================================
-descriptive_analysis_file <- "C:/Users/ykarimah/Downloads/v1/Hasil TA/Hasil_Analisis_Modul_Deskriptif.xlsx"
-projection_area_file_bau  <- "C:/Users/ykarimah/Downloads/v1/06_Contoh Hasil/luc_projection_padagimo_bau.xlsx"
+descriptive_analysis_file <- "inst/extdata/output/Hasil_Analisis_Modul_Deskriptif.xlsx"
+projection_area_file_bau  <- "inst/extdata/scenario/Padagimo/scenarioBAU/luc_projection_padagimo_bau.xlsx"
 
 initial_year <- params$initial_year
 
@@ -68,10 +68,10 @@ unconstrained     <- baseline$unconstrained
 # ==============================================================================
 scenario_inputs <- list(
   name              = paste0("Skenario_", params$scenario_name),
-  luc_projection    = "inst/extdata/scenario/scenario3/luc_projection.xlsx",
-  land_distribution = "inst/extdata/scenario/scenario3/luc_projection.xlsx",
-  lpc               = "inst/extdata/scenario/scenario3/produktivitas_lpc.xlsx",
-  io_changes        = "C:/Users/ykarimah/Downloads/v1/04_Data Ekonomi/IMLaS 3/asumsi_3_realokasi_fd.xlsx"
+  luc_projection    = NULL,
+  land_distribution = NULL,
+  lpc               = NULL,
+  io_changes        = "inst/extdata/scenario/Padagimo/scenario3/Template_Asumsi3_Realokasi_FD.xlsx"
 )
 sc_input <- load_scenario_inputs(scenario_inputs, P_default)
 
@@ -377,7 +377,7 @@ sc_io_system <- process_sc_ras_system_dynamic(
   Labour_base  = labour_nominal,
   Wage_base    = wage_nominal,
   sektor_names = sektor_names,
-  years        = as.numeric(colnames(area_matrix_bau))   # <-- TAMBAHKAN
+  years        = as.numeric(colnames(area_matrix_bau))
 )
 
 cat("==================================================================\n")
