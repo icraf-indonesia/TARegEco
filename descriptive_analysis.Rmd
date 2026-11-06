@@ -629,6 +629,7 @@ Analisis multiplier menunjukkan bahwa sektor `r multiplier_table$SECTOR[which.ma
 ```{r export, echo=FALSE, message=FALSE, warning=FALSE}
 # Export Excel
 export_io_analysis(
+  sector = sector, 
   gdp_baseline = gdp_baseline,
   linkage_result = linkage_result,
   growth_rate = growth_rate,
