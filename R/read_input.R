@@ -140,7 +140,22 @@ load_projection_baseline <- function(path, projection_area_file_bau) {
       intermediate_consumption <- io$intermediate_consumption
     } else {
       sector_idx <- which(code_registry$Type == "Sector")
-      intermediate_consumption <- full_io_table[sector_idx, sector_idx, drop = FALSE]
+      
+      # Cek apakah rownames full_io_table = label atau kode
+      row_labels_in_table <- rownames(full_io_table)
+      sector_labels       <- as.character(code_registry$Label[sector_idx])
+      sector_codes        <- as.character(code_registry$Code[sector_idx])
+      
+      if (all(sector_labels %in% row_labels_in_table)) {
+        # full_io_table pakai LABEL
+        intermediate_consumption <- full_io_table[sector_labels, sector_labels, drop = FALSE]
+      } else if (all(sector_codes %in% row_labels_in_table)) {
+        # full_io_table pakai KODE (backward compat)
+        intermediate_consumption <- full_io_table[sector_codes, sector_codes, drop = FALSE]
+      } else {
+        # Fallback: subset by position
+        intermediate_consumption <- full_io_table[sector_idx, sector_idx, drop = FALSE]
+      }
     }
     storage.mode(intermediate_consumption) <- "numeric"
 
@@ -248,18 +263,37 @@ load_projection_baseline <- function(path, projection_area_file_bau) {
     
     # ---- Filter sektor via code_registry ----
     sector_idx    <- which(code_registry$Type == "Sector")
-    sector_labels <- as.character(code_registry$Code[sector_idx])
     
+    # full_io_table sekarang pakai LABEL sebagai rownames/colnames (bukan Code)
+    # — ambil Label dari code_registry, bukan Code
+    sector_labels <- as.character(code_registry$Label[sector_idx])
+    
+    # Validasi: label harus ada di rownames full_io_table
     missing <- setdiff(sector_labels, rownames(full_io_table))
     if (length(missing) > 0) {
-      stop("Label sektor tidak ada di rownames Full_IO_Table: ",
-           paste(head(missing, 10), collapse = ", "))
+      # Fallback: coba subset via posisi (Row_Index / Col_Index)
+      message("[load_projection_baseline] Label sektor tidak match rownames. ",
+              "Fallback ke subset via posisi (Row_Index/Col_Index).")
+      
+      row_pos <- code_registry$Row_Index[sector_idx]
+      col_pos <- code_registry$Col_Index[sector_idx]
+      
+      # Buang NA
+      row_pos <- row_pos[!is.na(row_pos)]
+      col_pos <- col_pos[!is.na(col_pos)]
+      
+      if (length(row_pos) != length(col_pos)) {
+        stop("Row_Index dan Col_Index tidak konsisten di code_registry. ",
+             "Cek sheet Code_Registry.")
+      }
+      
+      intermediate_consumption <- full_io_table[row_pos, col_pos, drop = FALSE]
+    } else {
+      # ---- Intermediate consumption: subset by name (label) ----
+      intermediate_consumption <- full_io_table[sector_labels, sector_labels, drop = FALSE]
     }
-    
-    # ---- Intermediate consumption: subset by name ----
-    intermediate_consumption <- full_io_table[sector_labels, sector_labels, drop = FALSE]
     storage.mode(intermediate_consumption) <- "numeric"
-
+    
     income_multiplier <- read_input_file(path, sheet = "Multiplier_Income", header = TRUE)
     labour_multiplier <- read_input_file(path, sheet = "Multiplier_Labour", header = TRUE)
     SUB_multiplier    <- read_input_file(path, sheet = "Multiplier_SUB",    header = TRUE)
