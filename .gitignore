@@ -16,5 +16,14 @@ dump
 scenario_assumption3.html
 >>>>>>> 103b1306c2e617c9d51befa3a36ad248567de2ce
 docs
+<<<<<<< HEAD
 descriptive_analysis.Rmd
 shiny/
+=======
+scenario_assumption3_new.html
+scenario_assumption3_new-input.html
+>>>>>>> 6db3b0be064d20cc78a2d1f9d93b01a05cf8218d
+projection_analysis.Rmd
+scenario_assumption1.Rmd
+scenario_assumption3.Rmd
+scenario_assumption3_new input.Rmd

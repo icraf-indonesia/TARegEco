@@ -2,7 +2,7 @@
 % Please edit documentation in R/projection.R
 \name{run_projection_scenario}
 \alias{run_projection_scenario}
-\title{Run Projection Scenario (Supply-Constrained Mixed Input-Output Model)}
+\title{Run Projection Scenario 1 + 2 + 3 (Supply-Constrained Mixed Input-Output Model)}
 \usage{
 run_projection_scenario(
   gdp_baseline,
