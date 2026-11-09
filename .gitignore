@@ -16,3 +16,5 @@ dump
 scenario_assumption3.html
 >>>>>>> 103b1306c2e617c9d51befa3a36ad248567de2ce
 docs
+descriptive_analysis.Rmd
+shiny/
