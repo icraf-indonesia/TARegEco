@@ -30,14 +30,19 @@ code and label for added value components.}
 }
 \value{
 A list with elements:
-  \item{full_io_table}{Complete IO matrix}
-  \item{code_registry}{Tibble with code mapping}
+  \item{full_io_table}{Complete IO matrix (rownames/colnames = labels)}
+  \item{code_registry}{Tibble with code mapping (Code column kept as-is)}
   \item{n_sector}{Number of sectors}
 }
 \description{
 Combines Intermediate Consumption, Final Demand, and Added Value into a
 single complete matrix, along with a Code Registry that maps each code to
 label, type, and row/column position.
+}
+\details{
+The returned `full_io_table` uses **labels** (sector names, FD names, VA names)
+as row/column names, so it is human-readable. The `code_registry` retains the
+original numeric codes for internal mapping.
 }
 \examples{
 \dontrun{

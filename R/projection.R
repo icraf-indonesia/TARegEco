@@ -178,7 +178,7 @@ get_intensity <- function(intensity_table, sector, period_start, period_end) {
 #' @return A data frame with projected indicators for all sectors and years.
 #'
 #' @export
-run_projection <- function(
+run_projection_bau <- function(
     gdp_baseline,
     income_multiplier,
     labour_multiplier,
@@ -195,7 +195,8 @@ run_projection <- function(
     io_changes      = NULL,
     intensity_table = NULL,
     constrained     = NULL,
-    unconstrained   = NULL
+    unconstrained   = NULL,
+    pop_projection  = NULL
 ) {
   
   # ============================================================================
@@ -241,6 +242,34 @@ run_projection <- function(
   LPC_0        <- LPC_0[idx_valid]
   sektor_names <- sektor_names[idx_valid]
   n            <- length(idx_valid)
+  
+  # ---- Proyeksi Populasi (untuk per-kapita) ----
+  pop_vector     <- NULL
+  has_population <- FALSE
+  if (!is.null(pop_projection)) {
+    if (is.data.frame(pop_projection)) {
+      if ("Populasi" %in% colnames(pop_projection)) {
+        pop_vector <- as.numeric(pop_projection$Populasi)
+      } else if ("Jumlah_Penduduk_Orang" %in% colnames(pop_projection)) {
+        pop_vector <- as.numeric(pop_projection$Jumlah_Penduduk_Orang)
+      } else {
+        pop_vector <- as.numeric(pop_projection[[ncol(pop_projection)]])
+      }
+    } else if (is.numeric(pop_projection)) {
+      pop_vector <- as.numeric(pop_projection)
+    }
+    
+    if (!is.null(pop_vector) && length(pop_vector) == t_max) {
+      has_population <- TRUE
+      message(sprintf(
+        "  ✓ Proyeksi penduduk dimuat (%d tahun, %.0f -> %.0f jiwa)",
+        t_max, pop_vector[1], pop_vector[t_max]
+      ))
+    } else {
+      warning("[run_projection] Panjang populasi tidak cocok. Indikator per kapita NA.")
+      pop_vector <- NULL
+    }
+  }
   
   # Koefisien input primer (proporsi terhadap output baseline)
   v_c <- as.numeric(unlist(gdp_baseline$GDP_PROP))[idx_valid]
@@ -355,6 +384,32 @@ run_projection <- function(
     rhs    <- Y_nc_t - (M_nc_co %*% x_co_t)
     x_nc_t <- M_nc_nc_inv %*% rhs
     
+    # --- DEBUG BLOCK (hapus setelah selesai) ---
+    if (k == 1) {
+      cat("\n=== DEBUG k=1 ===\n")
+      cat("anyNA(Z)         :", anyNA(Z), "\n")
+      cat("anyNA(A_full)    :", anyNA(A_full), "\n")
+      cat("anyNA(M_nc_nc)   :", anyNA(M_nc_nc), "\n")
+      cat("anyNA(M_nc_co)   :", anyNA(M_nc_co), "\n")
+      cat("anyNA(rhs)       :", anyNA(rhs), "\n")
+      cat("anyNA(x_nc_t)    :", anyNA(x_nc_t), "\n")
+      cat("range(colSums(A_full)) :", range(colSums(A_full, na.rm = TRUE)), "\n")
+      cat("max(A_full, na.rm=TRUE):", max(A_full, na.rm = TRUE), "\n")
+      cat("kappa(M_nc_nc)   :", kappa(M_nc_nc), "\n")
+      cat("range(rhs)       :", range(rhs), "\n")
+      cat("sum(rhs < 0)     :", sum(rhs < 0), "\n")
+      cat("range(x_nc_t)    :", range(x_nc_t), "\n")
+      cat("sum(x_nc_t < 0)  :", sum(x_nc_t < 0), "dari", length(x_nc_t), "\n")
+      # Sektor dengan x_nc_t paling negatif
+      worst <- order(x_nc_t)[1:5]
+      print(data.frame(
+        SECTOR = sektor_names[idx_nc][worst],
+        x0     = x_0[idx_nc][worst],
+        rhs    = rhs[worst],
+        x_nc_t = x_nc_t[worst]
+      ), row.names = FALSE)
+    }
+    
     # --- E. Rekonstruksi output total ---
     x_t             <- numeric(n)
     x_t[idx_co]     <- as.vector(x_co_t)
@@ -380,32 +435,42 @@ run_projection <- function(
   for (k in seq_len(t_max)) {
     yr <- years[k]
     
-    # Vektor per sektor (panjang n)
-    land_req_t      <- numeric(n)
+    land_req_t         <- numeric(n)
     land_req_t[idx_co] <- L_co_matrix[k, ]
-    land_req_t[idx_nc] <- 0   # sektor nc tidak pakai lahan
+    land_req_t[idx_nc] <- 0
     
-    lpc_growth_t      <- numeric(n)
+    lpc_growth_t         <- numeric(n)
     lpc_growth_t[idx_co] <- LPC_growth_matrix[k, ]
     
-    # LPC per sektor (hanya co yang > 0)
-    lpc_t      <- numeric(n)
-    lpc_t[idx_co] <- current_lpc_co  # setelah update
+    lpc_t         <- numeric(n)
+    lpc_t[idx_co] <- current_lpc_co
+    
+    # ---- Agregat tahunan untuk per-kapita ----
+    tot_pdrb   <- sum(PDRB_sektoral[k, ], na.rm = TRUE)
+    tot_inc_tk <- sum(Inc_sektoral[k, ],  na.rm = TRUE)
+    
+    pop_k <- if (isTRUE(has_population)) pop_vector[k] else NA_real_
+    pdrb_pc <- if (!is.na(pop_k) && pop_k > 0) tot_pdrb   / pop_k else NA_real_
+    inc_pc  <- if (!is.na(pop_k) && pop_k > 0) tot_inc_tk / pop_k else NA_real_
     
     results_list[[as.character(yr)]] <- tibble::tibble(
-      YEAR             = yr,
-      SECTOR           = sektor_names,
-      LAND_REQUIREMENT = land_req_t,
-      LPC              = lpc_t,
-      LPC_GROWTH_RATE  = lpc_growth_t,
-      FD               = Y_0,                     # permintaan akhir baseline
-      OUTPUT           = x_out[k, ],
-      GDP              = PDRB_sektoral[k, ],
-      INCOME           = Inc_sektoral[k, ],
-      LABOUR           = Lab_sektoral[k, ],
-      SURPLUS          = SUB_sektoral[k, ],
-      ITBL             = ITBL_vector,
-      ITFL             = ITFL_vector
+      YEAR              = yr,
+      SECTOR            = sektor_names,
+      LAND_REQUIREMENT  = land_req_t,
+      LPC               = lpc_t,
+      LPC_GROWTH_RATE   = lpc_growth_t,
+      FD                = Y_0,
+      OUTPUT            = x_out[k, ],
+      GDP               = PDRB_sektoral[k, ],
+      INCOME            = Inc_sektoral[k, ],
+      LABOUR            = Lab_sektoral[k, ],
+      SURPLUS           = SUB_sektoral[k, ],
+      ITBL              = ITBL_vector,
+      ITFL              = ITFL_vector,
+      # ---- per-kapita (nilai tahunan yang sama untuk setiap baris sektor) ----
+      POPULATION        = pop_k,
+      GDP_PER_CAPITA    = pdrb_pc,
+      INCOME_PER_CAPITA = inc_pc
     )
   }
   
@@ -418,6 +483,8 @@ run_projection <- function(
       )
     )
   
+  attr(final_result, "has_population") <- has_population
+  attr(final_result, "pop_vector")     <- pop_vector
   return(final_result)
 }
 
@@ -450,55 +517,45 @@ compute_linkage_index <- function(L, sector_names = NULL) {
   list(itbl = itbl, itfl = itfl)
 }
 
-#' Diagnostik io_changes terhadap baseline (hanya peringatan/pesan)
+#' Diagnostik: Cek Kecocokan Nama Sektor di io_changes vs Baseline
 #'
-#' Mengecek dua hal yang membuat Asumsi 3 gagal senyap:
-#' (1) nama sektor asal/tujuan tidak cocok dengan baseline, dan
-#' (2) sel [From, To] di Z baseline bernilai 0. RAS hanya menskalakan sel yang
-#' sudah ada, jadi hubungan baru tidak terbentuk lewat penambahan transaksi.
-#' Hanya berjalan jika kolom `SEKTOR ASAL (FROM SECTOR)` dan
-#' `SEKTOR TUJUAN (TO SECTOR)` ada.
+#' @param io_changes Data frame. Isi file A3.
+#' @param sektor_names Character vector. Nama sektor baseline.
+#' @param Z Numeric matrix. Matriks transaksi antara baseline.
 #'
-#' @keywords internal
-#' @noRd
+#' @return Invisible NULL. Memunculkan warning jika ada masalah.
+#' @export
 check_io_changes <- function(io_changes, sektor_names, Z) {
-  from_col <- "SEKTOR ASAL (FROM SECTOR)"
-  to_col   <- "SEKTOR TUJUAN (TO SECTOR)"
-  if (!all(c(from_col, to_col) %in% names(io_changes))) return(invisible(NULL))
-  
-  from_nm <- as.character(io_changes[[from_col]])
-  to_nm   <- as.character(io_changes[[to_col]])
-  keep    <- !is.na(from_nm) & !is.na(to_nm)
-  from_nm <- from_nm[keep]
-  to_nm   <- to_nm[keep]
-  
-  unknown <- unique(c(setdiff(from_nm, sektor_names), setdiff(to_nm, sektor_names)))
-  if (length(unknown) > 0) {
-    warning(
-      "Nama sektor pada io_changes tidak ditemukan di baseline (baris dilewati): ",
-      paste(unknown, collapse = ", "),
-      call. = FALSE
-    )
+  if (is.null(io_changes) || nrow(io_changes) == 0) {
+    warning("[check_io_changes] io_changes kosong.")
+    return(invisible(NULL))
   }
-  
-  i  <- match(from_nm, sektor_names)
-  j  <- match(to_nm,   sektor_names)
-  ok <- !is.na(i) & !is.na(j)
-  
-  if (any(ok)) {
-    n_zero <- sum(Z[cbind(i[ok], j[ok])] == 0, na.rm = TRUE)
-    if (n_zero > 0) {
-      message(sprintf(
-        "  ! %d dari %d pasangan From-To bernilai 0 di Z baseline. RAS tidak membentuk hubungan baru dari sel nol.",
-        n_zero, sum(ok)
-      ))
-    }
+  names_df <- trimws(names(io_changes))
+  find_col <- function(p) {
+    h <- names_df[grep(p, names_df, ignore.case = TRUE)]
+    if (length(h) == 0) NA_character_ else h[1]
   }
-  
+  col_from <- find_col("Sektor Asal|From Sector")
+  col_to   <- find_col("Sektor Tujuan|To Sector")
+  if (is.na(col_from) || is.na(col_to)) {
+    warning("[check_io_changes] Kolom 'Sektor Asal'/'Sektor Tujuan' tidak ditemukan.")
+    return(invisible(NULL))
+  }
+  from_vals <- unique(trimws(as.character(io_changes[[col_from]])))
+  to_vals   <- unique(trimws(as.character(io_changes[[col_to]])))
+  all_vals  <- unique(c(from_vals, to_vals))
+  all_vals  <- all_vals[!is.na(all_vals) & all_vals != ""]
+  unmatched <- setdiff(tolower(all_vals), tolower(trimws(sektor_names)))
+  if (length(unmatched) > 0) {
+    warning(sprintf(
+      "[check_io_changes] %d nama sektor di file A3 tidak match baseline: %s",
+      length(unmatched), paste(unmatched, collapse = ", ")
+    ))
+  }
   invisible(NULL)
 }
 
-#' Run Projection Scenario (Supply-Constrained Mixed Input-Output Model)
+#' Run Projection Scenario 1 + 2 + 3 (Supply-Constrained Mixed Input-Output Model)
 #'
 #' Accepts any free combination of BAU scenario, Assumption 1, Assumption 2,
 #' and Assumption 3. All scenario parameters are optional. The function will
@@ -724,94 +781,41 @@ run_projection_scenario <- function(
   ITFL_vector <- link_before$itfl
   
   # ==========================================================================
-  # 4. ASSUMPTION 3: IO SYSTEM OVERRIDE VIA RAS
+  # 4. ASSUMPTION 3: IO SYSTEM OVERRIDE (DYNAMIC PER YEAR)
   # ==========================================================================
   sc_io_system <- NULL
   
   if (use_a3) {
-    message("[run_projection] Running RAS balancing (Assumption 3)...")
+    message("[run_projection] Processing Assumption 3 (re-alokasi FD → Z)...")
     
-    # Diagnostics: sector name mismatches / From-To sectors with zero values
+    # Diagnostics: sector name mismatches
     check_io_changes(io_changes, sektor_names, Z)
     
-    sc_io_system <- process_sc_ras_system(
+    sc_io_system <- process_sc_ras_system_dynamic(
       df_input     = io_changes,
       Z_base       = Z,
       X_base       = x_0,
       Labour_base  = labour_nominal,
       Wage_base    = wage_nominal,
-      sektor_names = sektor_names
+      sektor_names = sektor_names,
+      years        = years
     )
     
-    message(sprintf("  ✓ RAS iterations=%d, max diff=%.3e",
-                    sc_io_system$ras_iterations, sc_io_system$ras_diff))
-    
-    # ==========================================================
-    # GUARD: Cek apakah RAS gagal konvergen / menghasilkan NaN
-    # ==========================================================
-    is_ras_failed <- is.na(sc_io_system$ras_diff) || 
-      !is.finite(sc_io_system$ras_diff) || 
-      sc_io_system$ras_diff > 1e3
-    
-    if (is_ras_failed) {
-      warning(
-        "\n[RAS GAGAL] Target Output (ΔX) atau Transaksi (ΔZ) di file Asumsi 3 terlalu besar ",
-        "dibandingkan baseline (max diff = ", sc_io_system$ras_diff, "). ",
-        "Mengabaikan Asumsi 3 dan menggunakan tabel I-O baseline."
-      )
-      
-      # Fallback: Jangan pakai hasil RAS, kembalikan ke baseline
+    # Guard: jika tidak ada A_list (tidak ada delta), matikan A3
+    if (is.null(sc_io_system$A_list) || length(sc_io_system$A_list) == 0) {
+      warning("[run_projection] A3 file loaded but no year columns matched. A3 ignored.")
       use_a3 <- FALSE
       active_assumptions <- setdiff(active_assumptions, "A3")
-      
-      L_new <- NULL
-      link_after <- link_before
-      
-      A_full      <- sweep(Z, 2, x_0, "/")
-      M_full      <- diag(n) - A_full
-      B_full      <- solve(M_full)
-      # v_c, w_c, l_c, Y_0, x_0, ITBL, ITFL dibiarkan menggunakan nilai baseline
-      
+      sc_io_system <- NULL
     } else {
-      # Jika RAS berhasil, lanjutkan seperti biasa
-      L_new <- sc_io_system$L_new
-      if (is.null(L_new)) L_new <- solve(diag(n) - sc_io_system$A_new)
-      
-      link_after <- compute_linkage_index(L_new, sektor_names)
-      
-      A_full      <- sc_io_system$A_new
-      M_full      <- diag(n) - A_full
-      B_full      <- L_new
-      v_c         <- sc_io_system$v_c_new
-      w_c         <- sc_io_system$w_c_new
-      l_c         <- sc_io_system$l_c_new
-      Y_0         <- sc_io_system$Y_new
-      x_0         <- sc_io_system$X_new
-      ITBL_vector <- link_after$itbl
-      ITFL_vector <- link_after$itfl
-      
-      d_itbl <- max(abs(link_after$itbl - link_before$itbl), na.rm = TRUE)
-      d_itfl <- max(abs(link_after$itfl - link_before$itfl), na.rm = TRUE)
-      message(sprintf("  ✓ max|dITBL|=%.4g, max|dITFL|=%.4g", d_itbl, d_itfl))
-    }
-    
-    if (max(d_itbl, d_itfl) < 1e-8) {
-      warning(
-        "Assumption 3 is active but ITBL/ITFL did not change. Check: ",
-        "(1) sector names in io_changes exactly match baseline sectors, ",
-        "(2) the delta Z column contains values > 0.",
-        call. = FALSE
-      )
+      message(sprintf("  ✓ A3: %d tahun berisi delta (mode=%s)",
+                      length(sc_io_system$A_list), sc_io_system$mode))
     }
   }
   
   # ==========================================================================
   # 5. SUB-PARTITION (AFTER A3 OVERRIDE)
   # ==========================================================================
-  M_nc_co     <- M_full[idx_nc, idx_co, drop = FALSE]
-  M_nc_nc     <- M_full[idx_nc, idx_nc, drop = FALSE]
-  M_nc_nc_inv <- solve(M_nc_nc)
-  
   P_sub <- as.matrix(P[idx_co, , drop = FALSE])
   storage.mode(P_sub) <- "numeric"
   
@@ -873,7 +877,7 @@ run_projection_scenario <- function(
   }
   
   # ==========================================================================
-  # 7. PROJECTION ITERATION
+  # 7. PROJECTION ITERATION (A3 handled dynamically per-year)
   # ==========================================================================
   x_out             <- matrix(0, nrow = t_max, ncol = n)
   PDRB_sektoral     <- matrix(0, nrow = t_max, ncol = n)
@@ -883,15 +887,39 @@ run_projection_scenario <- function(
   L_co_matrix       <- matrix(0, nrow = t_max, ncol = m)
   LPC_growth_matrix <- matrix(0, nrow = t_max, ncol = m)
   LPC_t_matrix      <- matrix(0, nrow = t_max, ncol = m)
+  Y_out             <- matrix(0, nrow = t_max, ncol = n)
+  ITBL_matrix       <- matrix(0, nrow = t_max, ncol = n)
+  ITFL_matrix       <- matrix(0, nrow = t_max, ncol = n)
   
   for (k in seq_len(t_max)) {
     yr            <- years[k]
+    yr_str        <- as.character(yr)
     selisih_tahun <- yr - initial_year
     
-    # --- A. Final demand for nc sectors ---
-    Y_nc_t <- Y_0[idx_nc] * ((1 + gr_vec[idx_nc]) ^ selisih_tahun)
+    # --- A. Dynamic A_t, Y_k, linkage (A3 per tahun) ---
+    if (use_a3 && !is.null(sc_io_system$A_list) &&
+        yr_str %in% names(sc_io_system$A_list)) {
+      A_t    <- sc_io_system$A_list[[yr_str]]
+      Y_k    <- sc_io_system$Y_list[[yr_str]]
+      ITBL_k <- sc_io_system$ITBL_list[[yr_str]]
+      ITFL_k <- sc_io_system$ITFL_list[[yr_str]]
+    } else {
+      A_t    <- A_full
+      Y_k    <- Y_0
+      ITBL_k <- ITBL_vector
+      ITFL_k <- ITFL_vector
+    }
     
-    # --- B. Dynamic LPC for A2, static otherwise ---
+    # Recompute dynamic mixed-IO sub-matrices from A_t
+    M_t           <- diag(n) - A_t
+    M_nc_co_t     <- M_t[idx_nc, idx_co, drop = FALSE]
+    M_nc_nc_t     <- M_t[idx_nc, idx_nc, drop = FALSE]
+    M_nc_nc_inv_t <- solve(M_nc_nc_t)
+    
+    # --- B. Final demand NC (A3 sudah tercermin di Y_k) ---
+    Y_nc_t <- Y_k[idx_nc] * ((1 + gr_vec[idx_nc]) ^ selisih_tahun)
+    
+    # --- C. Dynamic LPC for A2, static otherwise ---
     if (use_a2 && yr > initial_year) {
       if (yr >= target_year) {
         p_0_co_t <- p_0_co_target
@@ -905,21 +933,21 @@ run_projection_scenario <- function(
       lpc_gr_vec <- rep(0, m)
     }
     
-    # --- C. Output of co sectors constrained by land ---
+    # --- D. Output CO ---
     luas_tutupan_t <- as.numeric(unlist(area_matrix[, k]))
     L_co_t         <- as.vector(P_sub %*% luas_tutupan_t)
     x_co_t         <- matrix(L_co_t * p_0_co_t, ncol = 1)
     
-    # --- D. Mixed IO solve ---
-    rhs    <- Y_nc_t - (M_nc_co %*% x_co_t)
-    x_nc_t <- M_nc_nc_inv %*% rhs
+    # --- E. Mixed IO solve ---
+    rhs    <- Y_nc_t - (M_nc_co_t %*% x_co_t)
+    x_nc_t <- M_nc_nc_inv_t %*% rhs
     
-    # --- E. Output reconstruction ---
+    # --- F. Rekonstruksi ---
     x_t         <- numeric(n)
     x_t[idx_co] <- as.vector(x_co_t)
     x_t[idx_nc] <- as.vector(x_nc_t)
     
-    # --- F. Multi-indicator ---
+    # --- G. Indikator ---
     PDRB_sektoral[k, ]     <- v_c * x_t
     Inc_sektoral[k, ]      <- w_c * x_t
     Lab_sektoral[k, ]      <- l_c * x_t
@@ -928,6 +956,11 @@ run_projection_scenario <- function(
     L_co_matrix[k, ]       <- L_co_t
     LPC_growth_matrix[k, ] <- lpc_gr_vec
     LPC_t_matrix[k, ]      <- p_0_co_t
+    
+    # --- H. Simpan Y dan linkage ---
+    Y_out[k, ]       <- Y_k
+    ITBL_matrix[k, ] <- ITBL_k
+    ITFL_matrix[k, ] <- ITFL_k
   }
   
   # ==========================================================================
@@ -963,15 +996,14 @@ run_projection_scenario <- function(
       LAND_REQUIREMENT               = land_req_t,
       LPC                            = lpc_t,
       LPC_GROWTH_RATE                = lpc_growth_t,
-      FD                             = Y_0,
+      FD                             = Y_out[k, ],
       OUTPUT                         = x_out[k, ],
       GDP                            = PDRB_sektoral[k, ],
       INCOME                         = Inc_sektoral[k, ],
       LABOUR                         = Lab_sektoral[k, ],
       SURPLUS                        = SUB_sektoral[k, ],
-      ITBL                           = as.numeric(ITBL_vector),
-      ITFL                           = as.numeric(ITFL_vector),
-      # ---- per-kapita untuk sektor terkait ----
+      ITBL                           = as.numeric(ITBL_matrix[k, ]),   # <-- dinamis
+      ITFL                           = as.numeric(ITFL_matrix[k, ]),   # <-- dinamis
       POPULATION                     = pop_k,
       GDP_PER_CAPITA                 = pdrb_per_kapita,
       INCOME_PER_CAPITA              = inc_per_kapita
@@ -989,9 +1021,9 @@ run_projection_scenario <- function(
   linkage_compare <- data.frame(
     SECTOR      = sektor_names,
     ITBL_BEFORE = as.numeric(link_before$itbl),
-    ITBL_AFTER  = as.numeric(ITBL_vector),
+    ITBL_AFTER  = as.numeric(ITBL_matrix[t_max, ]),
     ITFL_BEFORE = as.numeric(link_before$itfl),
-    ITFL_AFTER  = as.numeric(ITFL_vector),
+    ITFL_AFTER  = as.numeric(ITFL_matrix[t_max, ]),
     stringsAsFactors = FALSE
   )
   linkage_compare$DELTA_ITBL <- linkage_compare$ITBL_AFTER - linkage_compare$ITBL_BEFORE
