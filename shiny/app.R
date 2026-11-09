@@ -49,7 +49,8 @@ invisible(lapply(source_files, source))
 required_fns <- c(
   "load_projection_baseline",
   "load_scenario_inputs",
-  "run_projection_scenario_revised",
+  "run_projection_scenario",
+  "run_projection_scenario",
   "create_area_matrix",
   "read_input_file"
 )
@@ -1118,7 +1119,7 @@ server <- function(input, output, session) {
     }
   )
   
-  # ---- 3. TEMPLATE ASUMSI 3 (Hilirisasi / Restrukturisasi I-O) ----
+  # ---- 3. TEMPLATE ASUMSI 3 (Hilirisasi / Re-alokasi Final Demand) ----
   # ---- 3. TEMPLATE ASUMSI 3 (Hilirisasi / Re-alokasi Final Demand) ----
   output$download_template_a3 <- downloadHandler(
     filename = function() {
@@ -1128,6 +1129,15 @@ server <- function(input, output, session) {
     },
     content = function(file) {
       sec <- baseline_sectors()
+      
+      # ---- Guard: baseline wajib dimuat ----
+      if (is.null(sec) || nrow(sec) == 0) {
+        showNotification(
+          "Baseline belum dimuat. Klik 'Run Analysis' terlebih dahulu sebelum mengunduh Template A3.",
+          type = "warning", duration = 8
+        )
+        stop("Baseline belum dimuat.")
+      }
       
       # ---- Tahun proyeksi dari file BAU ----
       init_yr <- ifelse(is.na(initial_year_val()), 2025, initial_year_val())
@@ -1166,187 +1176,30 @@ server <- function(input, output, session) {
       p_h1_style     <- openxlsx::createStyle(textDecoration = "bold", fontSize = 10)
       
       # =====================================================================
-      # SHEET 1: Asumsi_3_Realokasi_FD
+      # SHEET 1: Petunjuk_Penggunaan   <-- REORDER: pindah ke paling atas
       # =====================================================================
-      sheet1 <- "Asumsi_3_Realokasi_FD"
+      sheet1 <- "Petunjuk_Penggunaan"
       openxlsx::addWorksheet(wb, sheet1)
       
-      # Title (baris 1)
       openxlsx::writeData(wb, sheet1,
-                          "TABEL ASUMSI 3: RE-ALOKASI FINAL DEMAND KE SEKTOR EKONOMI",
+                          "PETUNJUK PENGGUNAAN TABEL ASUMSI 3 (RE-ALOKASI FINAL DEMAND)",
                           startCol = 1, startRow = 1)
       openxlsx::addStyle(wb, sheet1, title_style, rows = 1, cols = 1)
       
-      # Petunjuk (baris 2)
-      openxlsx::writeData(wb, sheet1,
-                          paste0("Petunjuk: Masukkan Sektor Asal, Sektor Tujuan, Komponen Final Demand, ",
-                                 "dan Persentase Realokasi per Tahun (Maksimal 90%)."),
-                          startCol = 1, startRow = 2)
-      openxlsx::addStyle(wb, sheet1, sub_style, rows = 2, cols = 1)
-      
-      # Header tabel (baris 4)
-      hdr_row <- 4
-      headers <- c(
-        "Sektor Asal",
-        "Sektor Tujuan",
-        "Komponen Final Demand Asal",
-        yr_cols
-      )
-      openxlsx::writeData(wb, sheet1,
-                          as.data.frame(t(headers)),
-                          startCol = 1, startRow = hdr_row, colNames = FALSE)
-      
-      n_fixed_cols <- 3
-      openxlsx::addStyle(wb, sheet1, tbl_hdr_style,
-                         rows = hdr_row, cols = 1:n_fixed_cols, gridExpand = TRUE)
-      openxlsx::addStyle(wb, sheet1, year_hdr_style,
-                         rows = hdr_row,
-                         cols = (n_fixed_cols + 1):(n_fixed_cols + length(yr_cols)),
-                         gridExpand = TRUE)
-      openxlsx::setRowHeights(wb, sheet1, rows = hdr_row, heights = 70)
-      
-      # Baris data kosong (misal 20 baris)
-      n_rows     <- 20
-      data_start <- hdr_row + 1
-      data_end   <- data_start + n_rows - 1
-      
-      df_main <- data.frame(
-        `Sektor Asal`                  = rep(NA_character_, n_rows),
-        `Sektor Tujuan`                = rep(NA_character_, n_rows),
-        `Komponen Final Demand Asal`   = rep(NA_character_, n_rows),
-        check.names = FALSE,
-        stringsAsFactors = FALSE
-      )
-      for (yc in yr_cols) df_main[[yc]] <- rep(NA_real_, n_rows)
-      
-      openxlsx::writeData(wb, sheet1, df_main,
-                          startCol = 1, startRow = data_start, colNames = FALSE)
-      
-      # Styling baris data
-      openxlsx::addStyle(wb, sheet1, yellow_fill,
-                         rows = data_start:data_end,
-                         cols = 1:n_fixed_cols, gridExpand = TRUE)
-      openxlsx::addStyle(wb, sheet1, yellow_pct,
-                         rows = data_start:data_end,
-                         cols = (n_fixed_cols + 1):(n_fixed_cols + length(yr_cols)),
-                         gridExpand = TRUE)
-      
-      # Data validation: Komponen Final Demand (dropdown)
-      openxlsx::dataValidation(
-        wb, sheet1,
-        cols = 3,
-        rows = data_start:data_end,
-        type = "list",
-        value = '"Ekspor,Konsumsi Rumah Tangga,Konsumsi Pemerintah,PMTB,Total Final Demand"',
-        allowBlank = TRUE,
-        showErrorMsg = TRUE
-      )
-      
-      # Data validation: tahun (persen 0–1, warning > 0.9)
-      for (j in seq_along(yr_cols)) {
-        col_idx <- n_fixed_cols + j
-        openxlsx::dataValidation(
-          wb, sheet1,
-          cols = col_idx,
-          rows = data_start:data_end,
-          type = "decimal",
-          operator = "between",
-          value = c(0, 1),
-          allowBlank = TRUE,
-          showErrorMsg = TRUE,
-          errorTitle = "Nilai persentase",
-          error = "Masukkan nilai antara 0 dan 1 (0%–100%). Maksimal 90% (0.9) akan di-cap oleh sistem."
-        )
-      }
-      
-      # Freeze pane di header
-      openxlsx::freezePane(wb, sheet1, firstActiveRow = data_start, firstActiveCol = 4)
-      
-      # Column widths
-      openxlsx::setColWidths(
-        wb, sheet1,
-        cols = 1:n_fixed_cols,
-        widths = c(30, 35, 28)
-      )
-      openxlsx::setColWidths(
-        wb, sheet1,
-        cols = (n_fixed_cols + 1):(n_fixed_cols + length(yr_cols)),
-        widths = 8
-      )
-      
-      # =====================================================================
-      # SHEET 2: Daftar_Sektor
-      # =====================================================================
-      sheet2 <- "Daftar_Sektor"
-      openxlsx::addWorksheet(wb, sheet2)
-      
-      openxlsx::writeData(wb, sheet2,
-                          "DAFTAR SEKTOR EKONOMI MODEL INPUT-OUTPUT",
-                          startCol = 1, startRow = 1)
-      openxlsx::addStyle(wb, sheet2, title_style, rows = 1, cols = 1)
-      
-      openxlsx::writeData(wb, sheet2,
-                          paste0("Gunakan nama sektor di bawah ini (copy-paste) agar presisi saat ",
-                                 "mengisi 'Sektor Asal' dan 'Sektor Tujuan'."),
-                          startCol = 1, startRow = 2)
-      openxlsx::addStyle(wb, sheet2, sub_style, rows = 2, cols = 1)
-      
-      sec_headers <- c("NO SEKTOR", "NAMA SEKTOR OFFICIAL", "KATEGORI SEKTOR", "LPC BASELINE (Rp Juta/Ha)")
-      openxlsx::writeData(wb, sheet2,
-                          as.data.frame(t(sec_headers)),
-                          startCol = 1, startRow = 4, colNames = FALSE)
-      openxlsx::addStyle(wb, sheet2, tbl_hdr_style,
-                         rows = 4, cols = 1:4, gridExpand = TRUE)
-      
-      if (!is.null(sec) && nrow(sec) > 0) {
-        n_sec_data <- nrow(sec)
-        df_sec <- data.frame(
-          `NO SEKTOR`            = 1:n_sec_data,
-          `NAMA SEKTOR OFFICIAL` = sec$Sector,
-          `KATEGORI SEKTOR`      = ifelse(
-            !is.na(sec$LPC_Baseline) & sec$LPC_Baseline > 0,
-            "Constrained (Lahan)",
-            "Unconstrained (Non-Lahan)"
-          ),
-          `LPC BASELINE (Rp Juta/Ha)` = ifelse(is.na(sec$LPC_Baseline), 0, sec$LPC_Baseline),
-          check.names = FALSE,
-          stringsAsFactors = FALSE
-        )
-        openxlsx::writeData(wb, sheet2, df_sec,
-                            startCol = 1, startRow = 5, colNames = FALSE)
-        openxlsx::addStyle(wb, sheet2, center_style,
-                           rows = 5:(4 + n_sec_data), cols = 1, gridExpand = TRUE)
-      }
-      
-      openxlsx::setColWidths(wb, sheet2, cols = 1:4, widths = c(12, 50, 25, 25))
-      openxlsx::freezePane(wb, sheet2, firstActiveRow = 5)
-      
-      # =====================================================================
-      # SHEET 3: Petunjuk_Penggunaan
-      # =====================================================================
-      sheet3 <- "Petunjuk_Penggunaan"
-      openxlsx::addWorksheet(wb, sheet3)
-      
-      openxlsx::writeData(wb, sheet3,
-                          "PETUNJUK PENGGUNAAN TABEL ASUMSI 3 (RE-ALOKASI FINAL DEMAND)",
-                          startCol = 1, startRow = 1)
-      openxlsx::addStyle(wb, sheet3, title_style, rows = 1, cols = 1)
-      
-      # Tabel parameter
-      openxlsx::writeData(wb, sheet3, "PARAMETER", startCol = 1, startRow = 3)
-      openxlsx::writeData(wb, sheet3, "PENJELASAN", startCol = 2, startRow = 3)
-      openxlsx::addStyle(wb, sheet3, param_hdr_style,
+      openxlsx::writeData(wb, sheet1, "PARAMETER", startCol = 1, startRow = 3)
+      openxlsx::writeData(wb, sheet1, "PENJELASAN", startCol = 2, startRow = 3)
+      openxlsx::addStyle(wb, sheet1, param_hdr_style,
                          rows = 3, cols = 1:2, gridExpand = TRUE)
       
       guide_items <- list(
         c("Aturan Utama",
           "Nilai persentase pengalihan Final Demand MAKSIMAL adalah 90% (0.90). Jika dimasukkan angka di atas 90%, sistem R akan otomatis membatasi (cap) pada 90%."),
         c("Kolom Sektor Asal",
-          "Nama sektor komoditas mentah/asal yang nilai Final Demand-nya akan dialihkan (misal: Padi, Jagung, Karet). Salin nama persis dari sheet 'Daftar_Sektor'."),
+          "Nama sektor komoditas mentah/asal yang nilai Final Demand-nya akan dialihkan (misal: Padi, Jagung, Karet). Pilih dari dropdown (sheet 'Daftar_Sektor')."),
         c("Kolom Sektor Tujuan",
-          "Nama sektor industri pengolahan/pelayanan lokal yang akan menerima tambahan input transaksi antara dari Sektor Asal. Salin nama persis dari sheet 'Daftar_Sektor'."),
+          "Nama sektor industri pengolahan/pelayanan lokal yang akan menerima tambahan input transaksi antara dari Sektor Asal. Pilih dari dropdown (sheet 'Daftar_Sektor')."),
         c("Komponen Final Demand Asal",
-          "Pilih jenis komponen Permintaan Akhir yang dialihkan: 'Ekspor', 'Konsumsi Rumah Tangga', 'Konsumsi Pemerintah', 'PMTB', atau 'Total Final Demand'."),
+          "Pilih jenis komponen Permintaan Akhir yang dialihkan dari dropdown: Konsumsi Rumah Tangga, Konsumsi Pemerintah, Pembentukan Modal Tetap Bruto, Perubahan Inventori, atau Ekspor Barang."),
         c("Kolom Tahun (2025 - 2045)",
           "Isi persentase akumulatif/target pengalihan pada tahun tersebut. Contoh: 10% di 2029 berarti 10% dari nilai Final Demand baseline dialihkan ke Sektor Tujuan. Format: 0.1 = 10%, 0.9 = 90%."),
         c("Catatan Model",
@@ -1354,20 +1207,241 @@ server <- function(input, output, session) {
         c("Capping Otomatis",
           "Jika akumulasi persentase untuk satu sektor asal melebihi 90% dari Y_0-nya, sistem akan memotong (cap) pada 90% dan menampilkan warning."),
         c("Format Nilai Persen",
-          "Gunakan format desimal (0.1 = 10%) atau persen dengan tanda '%' (10% = 0.1). Keduanya didukung.")
+          "Gunakan format desimal (0.1 = 10%) atau persen dengan tanda '%' (10% = 0.1). Keduanya didukung."),
+        c("Urutan Sheet",
+          "1. Petunjuk_Penggunaan, 2. Asumsi_3_Realokasi_FD, 3. Daftar_Sektor, 4. Daftar_Final_Demand.")
       )
       
       for (i in seq_along(guide_items)) {
         r <- 3 + i
-        openxlsx::writeData(wb, sheet3, guide_items[[i]][1], startCol = 1, startRow = r)
-        openxlsx::writeData(wb, sheet3, guide_items[[i]][2], startCol = 2, startRow = r)
-        openxlsx::addStyle(wb, sheet3, bold_style, rows = r, cols = 1)
+        openxlsx::writeData(wb, sheet1, guide_items[[i]][1], startCol = 1, startRow = r)
+        openxlsx::writeData(wb, sheet1, guide_items[[i]][2], startCol = 2, startRow = r)
+        openxlsx::addStyle(wb, sheet1, bold_style, rows = r, cols = 1)
       }
       
-      openxlsx::setColWidths(wb, sheet3, cols = 1:2, widths = c(30, 110))
-      openxlsx::setRowHeights(wb, sheet3,
+      openxlsx::setColWidths(wb, sheet1, cols = 1:2, widths = c(30, 110))
+      openxlsx::setRowHeights(wb, sheet1,
                               rows = (3 + seq_along(guide_items)),
                               heights = 35)
+      
+      # =====================================================================
+      # SHEET 2: Asumsi_3_Realokasi_FD
+      # =====================================================================
+      sheet2 <- "Asumsi_3_Realokasi_FD"
+      openxlsx::addWorksheet(wb, sheet2)
+      
+      openxlsx::writeData(wb, sheet2,
+                          "TABEL ASUMSI 3: RE-ALOKASI FINAL DEMAND KE SEKTOR EKONOMI",
+                          startCol = 1, startRow = 1)
+      openxlsx::addStyle(wb, sheet2, title_style, rows = 1, cols = 1)
+      
+      openxlsx::writeData(wb, sheet2,
+                          paste0("Petunjuk: Pilih Sektor Asal & Tujuan dari dropdown (sheet 'Daftar_Sektor'), ",
+                                 "pilih Komponen Final Demand dari dropdown (sheet 'Daftar_Final_Demand'), ",
+                                 "dan isi Persentase Realokasi per Tahun (Maksimal 90%)."),
+                          startCol = 1, startRow = 2)
+      openxlsx::addStyle(wb, sheet2, sub_style, rows = 2, cols = 1)
+      
+      hdr_row <- 4
+      headers <- c("Sektor Asal", "Sektor Tujuan", "Komponen Final Demand Asal", yr_cols)
+      openxlsx::writeData(wb, sheet2,
+                          as.data.frame(t(headers)),
+                          startCol = 1, startRow = hdr_row, colNames = FALSE)
+      
+      n_fixed_cols <- 3
+      openxlsx::addStyle(wb, sheet2, tbl_hdr_style,
+                         rows = hdr_row, cols = 1:n_fixed_cols, gridExpand = TRUE)
+      openxlsx::addStyle(wb, sheet2, year_hdr_style,
+                         rows = hdr_row,
+                         cols = (n_fixed_cols + 1):(n_fixed_cols + length(yr_cols)),
+                         gridExpand = TRUE)
+      openxlsx::setRowHeights(wb, sheet2, rows = hdr_row, heights = 70)
+      
+      n_rows     <- 20
+      data_start <- hdr_row + 1
+      data_end   <- data_start + n_rows - 1
+      
+      df_main <- data.frame(
+        `Sektor Asal`                = rep(NA_character_, n_rows),
+        `Sektor Tujuan`              = rep(NA_character_, n_rows),
+        `Komponen Final Demand Asal` = rep(NA_character_, n_rows),
+        check.names = FALSE,
+        stringsAsFactors = FALSE
+      )
+      for (yc in yr_cols) df_main[[yc]] <- rep(NA_real_, n_rows)
+      
+      openxlsx::writeData(wb, sheet2, df_main,
+                          startCol = 1, startRow = data_start, colNames = FALSE)
+      
+      openxlsx::addStyle(wb, sheet2, yellow_fill,
+                         rows = data_start:data_end,
+                         cols = 1:n_fixed_cols, gridExpand = TRUE)
+      openxlsx::addStyle(wb, sheet2, yellow_pct,
+                         rows = data_start:data_end,
+                         cols = (n_fixed_cols + 1):(n_fixed_cols + length(yr_cols)),
+                         gridExpand = TRUE)
+      
+      # ---- Dropdown Sektor Asal & Tujuan (guard sec NULL) ----
+      n_sec_dropdown <- nrow(sec)   # sec sudah di-guard != NULL di atas
+      sector_range   <- paste0("Daftar_Sektor!$B$5:$B$", 4 + n_sec_dropdown)
+      
+      openxlsx::dataValidation(
+        wb, sheet2,
+        cols = 1, rows = data_start:data_end,
+        type = "list", value = sector_range,
+        allowBlank = TRUE, showErrorMsg = TRUE
+      )
+      
+      openxlsx::dataValidation(
+        wb, sheet2,
+        cols = 2, rows = data_start:data_end,
+        type = "list", value = sector_range,
+        allowBlank = TRUE, showErrorMsg = TRUE
+      )
+      
+      # ---- Dropdown Komponen Final Demand ----
+      fd_list <- tryCatch(
+        get_final_demand_kbli(baseline_data()$baseline, kbli_range = 301:305),
+        error = function(e) NULL
+      )
+      if (is.null(fd_list) || nrow(fd_list) == 0) {
+        fd_names <- c("Konsumsi Rumah Tangga", "Konsumsi Pemerintah",
+                      "Pembentukan Modal Tetap Bruto", "Perubahan Inventori",
+                      "Ekspor Barang")
+      } else {
+        fd_names <- fd_list$Label
+      }
+      
+      fd_range <- paste0("Daftar_Final_Demand!$C$5:$C$", 4 + length(fd_names))
+      
+      openxlsx::dataValidation(
+        wb, sheet2,
+        cols = 3, rows = data_start:data_end,
+        type = "list", value = fd_range,
+        allowBlank = TRUE, showErrorMsg = TRUE
+      )
+      
+      # ---- Validasi persen ----
+      for (j in seq_along(yr_cols)) {
+        openxlsx::dataValidation(
+          wb, sheet2,
+          cols = n_fixed_cols + j, rows = data_start:data_end,
+          type = "decimal", operator = "between", value = c(0, 1),
+          allowBlank = TRUE, showErrorMsg = TRUE
+        )
+      }
+      
+      openxlsx::freezePane(wb, sheet2, firstActiveRow = data_start, firstActiveCol = 4)
+      openxlsx::setColWidths(wb, sheet2, cols = 1:n_fixed_cols, widths = c(30, 35, 28))
+      openxlsx::setColWidths(wb, sheet2,
+                             cols = (n_fixed_cols + 1):(n_fixed_cols + length(yr_cols)),
+                             widths = 8)
+      
+      # =====================================================================
+      # SHEET 3: Daftar_Sektor
+      # =====================================================================
+      sheet3 <- "Daftar_Sektor"
+      openxlsx::addWorksheet(wb, sheet3)
+      
+      openxlsx::writeData(wb, sheet3,
+                          "DAFTAR SEKTOR EKONOMI MODEL INPUT-OUTPUT",
+                          startCol = 1, startRow = 1)
+      openxlsx::addStyle(wb, sheet3, title_style, rows = 1, cols = 1)
+      
+      openxlsx::writeData(wb, sheet3,
+                          "Gunakan dropdown di sheet 'Asumsi_3_Realokasi_FD' untuk memilih sektor. Sheet ini hanya referensi.",
+                          startCol = 1, startRow = 2)
+      openxlsx::addStyle(wb, sheet3, sub_style, rows = 2, cols = 1)
+      
+      sec_headers <- c("NO SEKTOR", "NAMA SEKTOR OFFICIAL", "KATEGORI SEKTOR", "LPC BASELINE (Rp Juta/Ha)")
+      openxlsx::writeData(wb, sheet3,
+                          as.data.frame(t(sec_headers)),
+                          startCol = 1, startRow = 4, colNames = FALSE)
+      openxlsx::addStyle(wb, sheet3, tbl_hdr_style,
+                         rows = 4, cols = 1:4, gridExpand = TRUE)
+      
+      n_sec_data <- nrow(sec)
+      df_sec <- data.frame(
+        `NO SEKTOR`            = 1:n_sec_data,
+        `NAMA SEKTOR OFFICIAL` = sec$Sector,
+        `KATEGORI SEKTOR`      = ifelse(
+          !is.na(sec$LPC_Baseline) & sec$LPC_Baseline > 0,
+          "Constrained (Lahan)", "Unconstrained (Non-Lahan)"
+        ),
+        `LPC BASELINE (Rp Juta/Ha)` = ifelse(is.na(sec$LPC_Baseline), 0, sec$LPC_Baseline),
+        check.names = FALSE, stringsAsFactors = FALSE
+      )
+      openxlsx::writeData(wb, sheet3, df_sec,
+                          startCol = 1, startRow = 5, colNames = FALSE)
+      openxlsx::addStyle(wb, sheet3, center_style,
+                         rows = 5:(4 + n_sec_data), cols = 1, gridExpand = TRUE)
+      
+      openxlsx::setColWidths(wb, sheet3, cols = 1:4, widths = c(12, 50, 25, 25))
+      openxlsx::freezePane(wb, sheet3, firstActiveRow = 5)
+      
+      # =====================================================================
+      # SHEET 4: Daftar_Final_Demand
+      # =====================================================================
+      sheet4 <- "Daftar_Final_Demand"
+      openxlsx::addWorksheet(wb, sheet4)
+      
+      openxlsx::writeData(wb, sheet4,
+                          "DAFTAR KOMPONEN FINAL DEMAND (KODE 301–305)",
+                          startCol = 1, startRow = 1)
+      openxlsx::addStyle(wb, sheet4, title_style, rows = 1, cols = 1)
+      
+      openxlsx::writeData(wb, sheet4,
+                          "Sumber: Code_Registry (Type = 'Final_Demand'). Pilih dari dropdown di sheet 'Asumsi_3_Realokasi_FD'.",
+                          startCol = 1, startRow = 2)
+      openxlsx::addStyle(wb, sheet4, sub_style, rows = 2, cols = 1)
+      
+      fd_headers <- c("NO", "CODE", "NAMA KOMPONEN FINAL DEMAND", "TYPE", "DIGUNAKAN DI KOLOM")
+      openxlsx::writeData(wb, sheet4,
+                          as.data.frame(t(fd_headers)),
+                          startCol = 1, startRow = 4, colNames = FALSE)
+      openxlsx::addStyle(wb, sheet4, tbl_hdr_style,
+                         rows = 4, cols = 1:5, gridExpand = TRUE)
+      
+      if (is.null(fd_list) || nrow(fd_list) == 0) {
+        fd_kbli_df <- data.frame(
+          Code  = as.character(301:305),
+          Label = c("Konsumsi Rumah Tangga", "Konsumsi Pemerintah",
+                    "Pembentukan Modal Tetap Bruto", "Perubahan Inventori",
+                    "Ekspor Barang"),
+          Type  = "Final_Demand",
+          stringsAsFactors = FALSE
+        )
+      } else {
+        fd_kbli_df <- fd_list
+      }
+      
+      df_fd <- data.frame(
+        NO   = seq_len(nrow(fd_kbli_df)),
+        CODE = fd_kbli_df$Code,
+        `NAMA KOMPONEN FINAL DEMAND` = fd_kbli_df$Label,
+        TYPE = fd_kbli_df$Type,
+        `DIGUNAKAN DI KOLOM` = "Komponen Final Demand Asal",
+        check.names = FALSE, stringsAsFactors = FALSE
+      )
+      
+      openxlsx::writeData(wb, sheet4, df_fd,
+                          startCol = 1, startRow = 5, colNames = FALSE)
+      
+      r_range <- 5:(4 + nrow(df_fd))
+      openxlsx::addStyle(wb, sheet4, center_style,
+                         rows = r_range, cols = c(1, 2, 4), gridExpand = TRUE)
+      openxlsx::addStyle(wb, sheet4, bold_style,
+                         rows = r_range, cols = c(2, 3), gridExpand = TRUE)
+      
+      note_row <- 4 + nrow(df_fd) + 2
+      openxlsx::writeData(wb, sheet4,
+                          paste0("Catatan: Kolom 'Komponen Final Demand Asal' di sheet 'Asumsi_3_Realokasi_FD' ",
+                                 "hanya menerima nilai dari daftar di atas (", nrow(df_fd), " komponen)."),
+                          startCol = 1, startRow = note_row)
+      openxlsx::addStyle(wb, sheet4, sub_style, rows = note_row, cols = 1)
+      
+      openxlsx::setColWidths(wb, sheet4, cols = 1:5, widths = c(6, 10, 45, 16, 32))
+      openxlsx::freezePane(wb, sheet4, firstActiveRow = 5)
       
       openxlsx::saveWorkbook(wb, file, overwrite = TRUE)
     }
@@ -1478,7 +1552,7 @@ server <- function(input, output, session) {
     # --- Panggil run_projection dengan tryCatch ---
     hasil <- tryCatch(
       do.call(
-        run_projection_scenario_all,
+        run_projection_scenario,
         c(
           list(
             gdp_baseline      = baseline$gdp_baseline,
@@ -1544,7 +1618,7 @@ server <- function(input, output, session) {
     options(initial_year = initial_year_val())
     
     hasil <- tryCatch(
-      run_projection(
+      run_projection_bau(
         gdp_baseline      = baseline$gdp_baseline,
         income_multiplier = baseline$income_multiplier,
         labour_multiplier = baseline$labour_multiplier,
