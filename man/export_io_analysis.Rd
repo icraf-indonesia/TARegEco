@@ -2,10 +2,11 @@
 % Please edit documentation in R/export.R
 \name{export_io_analysis}
 \alias{export_io_analysis}
-\title{Export descriptive analysis outputs to Excel}
+\title{Export Input-Output Descriptive Analysis Results to Excel}
 \usage{
 export_io_analysis(
   sector,
+  profile,
   gdp_baseline,
   linkage_result,
   growth_rate,
@@ -20,70 +21,58 @@ export_io_analysis(
   full_io_table,
   code_registry,
   balance_detail,
-  output_path = "data/IO_Analysis_Output.xlsx"
+  output_path = "data/Hasil_Analisis_Modul_Deskriptif.xlsx"
 )
 }
 \arguments{
-\item{gdp_baseline}{Tibble returned by [calculate_gdp()].}
+\item{sector}{Data frame or NULL. Economic sector definitions/categories.}
 
-\item{linkage_result}{List returned by [compute_linkage()].}
+\item{profile}{List or NULL. Metadata containing location, base year, currency, and IO source.}
 
-\item{growth_rate}{Tibble or data frame of sectoral growth rates.}
+\item{gdp_baseline}{Data frame. Baseline GDP and sectoral economic indicators.}
 
-\item{OM}{Output from [calc_output_multiplier()].}
+\item{linkage_result}{List. Contains Leontief inverse matrix and linkage indices.}
 
-\item{IM}{Output from [calc_income_multiplier()].}
+\item{growth_rate}{Numeric vector or data frame. Baseline Final Demand growth rates.}
 
-\item{LM}{Output from [calc_labour_multiplier()].}
+\item{labour}{Numeric vector, list, or data frame. Sectoral labor data.}
 
-\item{SUBM}{Output from [calc_sub_multiplier()].}
+\item{OM}{List. Output Multiplier calculation results and table.}
 
-\item{land_proportion}{Numeric matrix of land proportions.}
+\item{IM}{List. Income Multiplier calculation results and table.}
 
-\item{linkage_table}{Tibble of linkage results (from [create_linkages_table()]).}
+\item{LM}{List. Labor Multiplier calculation results and table.}
 
-\item{full_io_table}{Numeric matrix from [build_full_io_table()].}
+\item{SUBM}{List. Gross Operating Surplus (SUB) Multiplier results and details.}
 
-\item{code_registry}{Tibble from [build_full_io_table()].}
+\item{land_proportion}{Matrix or data frame. Baseline land proportion matrix (P).}
 
-\item{balance_detail}{Tibble from [check_io_balance()].}
+\item{landuse_table}{Data frame or NULL. Historical/baseline land cover matrix.}
 
-\item{output_path}{Character. Path to the output Excel file.
-Default is `"data/IO_Analysis_Output.xlsx"`.}
+\item{linkage_table}{Data frame. Summarized Backward and Forward Linkage table.}
+
+\item{full_io_table}{Matrix or data frame. Complete baseline Input-Output table.}
+
+\item{code_registry}{Data frame. Registry of sector codes and classifications.}
+
+\item{balance_detail}{Data frame or NULL. Detailed sector-by-sector IO balance checks.}
+
+\item{output_path}{Character. The destination file path for the exported Excel file.
+Defaults to `"data/Hasil_Analisis_Modul_Deskriptif.xlsx"`.}
 }
 \value{
-Invisibly returns the full path to the saved workbook.
+Invisibly returns the `output_path` string upon successful file creation.
 }
 \description{
-Writes all main results of the descriptive Input-Output analysis into a
-single Excel workbook. The workbook contains the following sheets:
+Generates a multi-tabbed Excel workbook (`.xlsx`) containing both the 
+baseline analysis output (descriptive statistics, multipliers, linkages, 
+and balance details) and protected raw input tables for data integrity tracking.
 }
 \details{
-- `GDP`: GDP per sector table
-- `Leontief_Matrix`: Leontief inverse matrix
-- `Growth_Rate`: sectoral growth rates
-- `Multiplier_Output`, `Multiplier_Income`, `Multiplier_Labour`,
-  `Multiplier_SUB`: multiplier tables
-- `Land_Proportion`: land proportion matrix
-- `Linkage`: linkage table (DBL, DFL, TBL, TFL, ITBL, ITFL)
-- `Full_IO_Table`: complete IO matrix (sectors + final demand + added value)
-- `Code_Registry`: code registry for modules that need cell-level changes
-- `Balance_Detail`: per-sector balance check table
+The exported workbook uses distinct tab colors for clarity:
+\itemize{
+  \item \strong{Blue Tab}: Readme / File Guide.
+  \item \strong{Green Tabs}: Editable output sheets (Descriptive analysis, multipliers, linkages).
+  \item \strong{Red Tabs}: Read-only protected input sheets (Raw IO table, land use, parameters).
 }
-\examples{
-\dontrun{
-export_io_analysis(
-  gdp_baseline = gdp_baseline,
-  linkage_result = linkage_result,
-  growth_rate = growth_rate,
-  OM = OM, IM = IM, LM = LM, SUBM = SUBM,
-  land_proportion = land_proportion,
-  linkage_table = linkages_table,
-  full_io_table = full_io_table,
-  code_registry = code_registry,
-  balance_detail = balance_result$balance_detail,
-  output_path = "data/IO_Analysis_Output.xlsx"
-)
-}
-
 }
