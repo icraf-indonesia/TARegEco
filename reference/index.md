@@ -21,6 +21,8 @@
   : Calculate LPC growth rate
 - [`check_io_balance()`](https://icraf-indonesia.github.io/TARegEco/reference/check_io_balance.md)
   : Check Input-Output balance
+- [`check_io_changes()`](https://icraf-indonesia.github.io/TARegEco/reference/check_io_changes.md)
+  : Diagnostik: Cek Kecocokan Nama Sektor di io_changes vs Baseline
 - [`classify_quadrant()`](https://icraf-indonesia.github.io/TARegEco/reference/classify_quadrant.md)
   : Classify sectors into quadrants
 - [`combine_multipliers()`](https://icraf-indonesia.github.io/TARegEco/reference/combine_multipliers.md)
@@ -42,7 +44,7 @@
 - [`create_scenario_templates()`](https://icraf-indonesia.github.io/TARegEco/reference/create_scenario_templates.md)
   : Create scenario template Excel file
 - [`export_io_analysis()`](https://icraf-indonesia.github.io/TARegEco/reference/export_io_analysis.md)
-  : Export descriptive analysis outputs to Excel
+  : Export Input-Output Descriptive Analysis Results to Excel
 - [`generate_gdp_bar_chart()`](https://icraf-indonesia.github.io/TARegEco/reference/generate_gdp_bar_chart.md)
   : Generate GDP bar chart
 - [`generate_gdp_donut_chart()`](https://icraf-indonesia.github.io/TARegEco/reference/generate_gdp_donut_chart.md)
@@ -69,15 +71,17 @@
   : Load scenario inputs with fallback to baseline
 - [`plot_comparison()`](https://icraf-indonesia.github.io/TARegEco/reference/plot_comparison.md)
   : Plot comparison of scenarios
+- [`process_sc_ras_system_dynamic()`](https://icraf-indonesia.github.io/TARegEco/reference/process_sc_ras_system_dynamic.md)
+  : Proses Input Asumsi 3 dan Bangun A_list / Y_list per Tahun
 - [`read_input_file()`](https://icraf-indonesia.github.io/TARegEco/reference/read_input_file.md)
   : Read input file (Excel or CSV) into a tibble or matrix
 - [`recalculate_leontief()`](https://icraf-indonesia.github.io/TARegEco/reference/recalculate_leontief.md)
   : Recalculate Leontief inverse after IO changes
-- [`run_projection()`](https://icraf-indonesia.github.io/TARegEco/reference/run_projection.md)
+- [`run_projection_bau()`](https://icraf-indonesia.github.io/TARegEco/reference/run_projection_bau.md)
   : Run projection (Supply-Constrained Mixed Input-Output Model)
 - [`run_projection_scenario()`](https://icraf-indonesia.github.io/TARegEco/reference/run_projection_scenario.md)
-  : Run Projection Scenario (Supply-Constrained Mixed Input-Output
-  Model)
+  : Run Projection Scenario 1 + 2 + 3 (Supply-Constrained Mixed
+  Input-Output Model)
 - [`save_analysis_data()`](https://icraf-indonesia.github.io/TARegEco/reference/save_analysis_data.md)
   : Save final descriptive analysis data to RDS or RData
 - [`save_core_analysis_data()`](https://icraf-indonesia.github.io/TARegEco/reference/save_core_analysis_data.md)

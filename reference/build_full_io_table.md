@@ -51,15 +51,22 @@ A list with elements:
 
 - full_io_table:
 
-  Complete IO matrix
+  Complete IO matrix (rownames/colnames = labels)
 
 - code_registry:
 
-  Tibble with code mapping
+  Tibble with code mapping (Code column kept as-is)
 
 - n_sector:
 
   Number of sectors
+
+## Details
+
+The returned \`full_io_table\` uses \*\*labels\*\* (sector names, FD
+names, VA names) as row/column names, so it is human-readable. The
+\`code_registry\` retains the original numeric codes for internal
+mapping.
 
 ## Examples
 

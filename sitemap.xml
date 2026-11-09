@@ -17,6 +17,7 @@
 <url><loc>https://icraf-indonesia.github.io/TARegEco/reference/calculate_gdp.html</loc></url>
 <url><loc>https://icraf-indonesia.github.io/TARegEco/reference/calculate_lpc_growth_rate.html</loc></url>
 <url><loc>https://icraf-indonesia.github.io/TARegEco/reference/check_io_balance.html</loc></url>
+<url><loc>https://icraf-indonesia.github.io/TARegEco/reference/check_io_changes.html</loc></url>
 <url><loc>https://icraf-indonesia.github.io/TARegEco/reference/classify_quadrant.html</loc></url>
 <url><loc>https://icraf-indonesia.github.io/TARegEco/reference/combine_multipliers.html</loc></url>
 <url><loc>https://icraf-indonesia.github.io/TARegEco/reference/compute_leontief.html</loc></url>
@@ -43,9 +44,10 @@
 <url><loc>https://icraf-indonesia.github.io/TARegEco/reference/load_projection_baseline.html</loc></url>
 <url><loc>https://icraf-indonesia.github.io/TARegEco/reference/load_scenario_inputs.html</loc></url>
 <url><loc>https://icraf-indonesia.github.io/TARegEco/reference/plot_comparison.html</loc></url>
+<url><loc>https://icraf-indonesia.github.io/TARegEco/reference/process_sc_ras_system_dynamic.html</loc></url>
 <url><loc>https://icraf-indonesia.github.io/TARegEco/reference/read_input_file.html</loc></url>
 <url><loc>https://icraf-indonesia.github.io/TARegEco/reference/recalculate_leontief.html</loc></url>
-<url><loc>https://icraf-indonesia.github.io/TARegEco/reference/run_projection.html</loc></url>
+<url><loc>https://icraf-indonesia.github.io/TARegEco/reference/run_projection_bau.html</loc></url>
 <url><loc>https://icraf-indonesia.github.io/TARegEco/reference/run_projection_scenario.html</loc></url>
 <url><loc>https://icraf-indonesia.github.io/TARegEco/reference/save_analysis_data.html</loc></url>
 <url><loc>https://icraf-indonesia.github.io/TARegEco/reference/save_core_analysis_data.html</loc></url>

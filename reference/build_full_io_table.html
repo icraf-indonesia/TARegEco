@@ -92,15 +92,21 @@ code and label for added value components.</p></dd>
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
     <p>A list with elements:</p>
 <dl><dt>full_io_table</dt>
-<dd><p>Complete IO matrix</p></dd>
+<dd><p>Complete IO matrix (rownames/colnames = labels)</p></dd>
 
   <dt>code_registry</dt>
-<dd><p>Tibble with code mapping</p></dd>
+<dd><p>Tibble with code mapping (Code column kept as-is)</p></dd>
 
   <dt>n_sector</dt>
 <dd><p>Number of sectors</p></dd>
 
 </dl></div>
+    <div class="section level2">
+    <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
+    <p>The returned `full_io_table` uses **labels** (sector names, FD names, VA names)
+as row/column names, so it is human-readable. The `code_registry` retains the
+original numeric codes for internal mapping.</p>
+    </div>
 
     <div class="section level2">
     <h2 id="ref-examples">Examples<a class="anchor" aria-label="anchor" href="#ref-examples"></a></h2>

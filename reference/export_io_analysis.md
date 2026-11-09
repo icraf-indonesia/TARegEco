@@ -1,13 +1,16 @@
-# Export descriptive analysis outputs to Excel
+# Export Input-Output Descriptive Analysis Results to Excel
 
-Writes all main results of the descriptive Input-Output analysis into a
-single Excel workbook. The workbook contains the following sheets:
+Generates a multi-tabbed Excel workbook (\`.xlsx\`) containing both the
+baseline analysis output (descriptive statistics, multipliers, linkages,
+and balance details) and protected raw input tables for data integrity
+tracking.
 
 ## Usage
 
 ``` r
 export_io_analysis(
   sector,
+  profile,
   gdp_baseline,
   linkage_result,
   growth_rate,
@@ -22,95 +25,95 @@ export_io_analysis(
   full_io_table,
   code_registry,
   balance_detail,
-  output_path = "data/IO_Analysis_Output.xlsx"
+  output_path = "data/Hasil_Analisis_Modul_Deskriptif.xlsx"
 )
 ```
 
 ## Arguments
 
+- sector:
+
+  Data frame or NULL. Economic sector definitions/categories.
+
+- profile:
+
+  List or NULL. Metadata containing location, base year, currency, and
+  IO source.
+
 - gdp_baseline:
 
-  Tibble returned by \[calculate_gdp()\].
+  Data frame. Baseline GDP and sectoral economic indicators.
 
 - linkage_result:
 
-  List returned by \[compute_linkage()\].
+  List. Contains Leontief inverse matrix and linkage indices.
 
 - growth_rate:
 
-  Tibble or data frame of sectoral growth rates.
+  Numeric vector or data frame. Baseline Final Demand growth rates.
+
+- labour:
+
+  Numeric vector, list, or data frame. Sectoral labor data.
 
 - OM:
 
-  Output from \[calc_output_multiplier()\].
+  List. Output Multiplier calculation results and table.
 
 - IM:
 
-  Output from \[calc_income_multiplier()\].
+  List. Income Multiplier calculation results and table.
 
 - LM:
 
-  Output from \[calc_labour_multiplier()\].
+  List. Labor Multiplier calculation results and table.
 
 - SUBM:
 
-  Output from \[calc_sub_multiplier()\].
+  List. Gross Operating Surplus (SUB) Multiplier results and details.
 
 - land_proportion:
 
-  Numeric matrix of land proportions.
+  Matrix or data frame. Baseline land proportion matrix (P).
+
+- landuse_table:
+
+  Data frame or NULL. Historical/baseline land cover matrix.
 
 - linkage_table:
 
-  Tibble of linkage results (from \[create_linkages_table()\]).
+  Data frame. Summarized Backward and Forward Linkage table.
 
 - full_io_table:
 
-  Numeric matrix from \[build_full_io_table()\].
+  Matrix or data frame. Complete baseline Input-Output table.
 
 - code_registry:
 
-  Tibble from \[build_full_io_table()\].
+  Data frame. Registry of sector codes and classifications.
 
 - balance_detail:
 
-  Tibble from \[check_io_balance()\].
+  Data frame or NULL. Detailed sector-by-sector IO balance checks.
 
 - output_path:
 
-  Character. Path to the output Excel file. Default is
-  \`"data/IO_Analysis_Output.xlsx"\`.
+  Character. The destination file path for the exported Excel file.
+  Defaults to \`"data/Hasil_Analisis_Modul_Deskriptif.xlsx"\`.
 
 ## Value
 
-Invisibly returns the full path to the saved workbook.
+Invisibly returns the \`output_path\` string upon successful file
+creation.
 
 ## Details
 
-\- \`GDP\`: GDP per sector table - \`Leontief_Matrix\`: Leontief inverse
-matrix - \`Growth_Rate\`: sectoral growth rates - \`Multiplier_Output\`,
-\`Multiplier_Income\`, \`Multiplier_Labour\`, \`Multiplier_SUB\`:
-multiplier tables - \`Land_Proportion\`: land proportion matrix -
-\`Linkage\`: linkage table (DBL, DFL, TBL, TFL, ITBL, ITFL) -
-\`Full_IO_Table\`: complete IO matrix (sectors + final demand + added
-value) - \`Code_Registry\`: code registry for modules that need
-cell-level changes - \`Balance_Detail\`: per-sector balance check table
+The exported workbook uses distinct tab colors for clarity:
 
-## Examples
+- **Blue Tab**: Readme / File Guide.
 
-``` r
-if (FALSE) { # \dontrun{
-export_io_analysis(
-  gdp_baseline = gdp_baseline,
-  linkage_result = linkage_result,
-  growth_rate = growth_rate,
-  OM = OM, IM = IM, LM = LM, SUBM = SUBM,
-  land_proportion = land_proportion,
-  linkage_table = linkages_table,
-  full_io_table = full_io_table,
-  code_registry = code_registry,
-  balance_detail = balance_result$balance_detail,
-  output_path = "data/IO_Analysis_Output.xlsx"
-)
-} # }
-```
+- **Green Tabs**: Editable output sheets (Descriptive analysis,
+  multipliers, linkages).
+
+- **Red Tabs**: Read-only protected input sheets (Raw IO table, land
+  use, parameters).

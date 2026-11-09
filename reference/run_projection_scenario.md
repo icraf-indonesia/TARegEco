@@ -1,4 +1,4 @@
-# Run Projection Scenario (Supply-Constrained Mixed Input-Output Model)
+# Run Projection Scenario 1 + 2 + 3 (Supply-Constrained Mixed Input-Output Model)
 
 Accepts any free combination of BAU scenario, Assumption 1, Assumption
 2, and Assumption 3. All scenario parameters are optional. The function
